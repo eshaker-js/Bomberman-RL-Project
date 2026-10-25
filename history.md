@@ -1,5 +1,8 @@
 # History
 
+## Next History entry goes here so older entries get pushed down, newest is on top.
+
+
 ## 2026-10-25 — First playable environment
 
 Basic version of Bomberman, currently starts with a pre-determined 11x11 grid.
