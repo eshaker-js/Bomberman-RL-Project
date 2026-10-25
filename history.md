@@ -2,10 +2,41 @@
 
 ## 2026-10-25 — First playable environment
 
-Added a deterministic 11×11 Bomberman sandbox with no learning code. `environment.py` owns the board, movement, the single bomb, explosions, and death. It exposes `reset()` and `step(action)` and does not import Pygame or use a wall clock. `play.py` draws colored shapes and turns one key press into one action.
+Basic version of Bomberman, currently starts with a pre-determined 11x11 grid.
 
-A bomb starts at countdown 4 and does not tick on the turn it is placed. Each later action moves the player first, then counts the bomb down. On the fourth of those actions it explodes. The blast covers the bomb cell and two cells in each direction. Walls stop a ray and stay; breakable blocks are destroyed and stop that ray. Flames are stored on the environment for the renderer and hurt the player only on the explosion step. There is one player, at most one bomb, and no win condition. After death, `step` leaves the state unchanged until `reset`.
+The grid has 3 types of cells:
+Empty
+Wall = unwalkable terrain.
+Block = breakable terrain (with a bomb)
 
-Verification: `python -m unittest discover -s tests -v` — 17 tests, OK. They cover collision, fuse timing, leaving and re-entering a bomb cell, blast blocking, block destruction, self-death, reset, and a scripted action sequence in a fresh process that never imports Pygame. A dummy-video pass through `play.py` also moved, planted a bomb, escaped, destroyed a block, died, ignored further play keys, and reset.
+The game takes place in a class called BombermanEnv.
+The class keeps data on the following:
 
-Suggested next steps: a reward and a real terminal condition, then whatever agent API the course wants around the existing `step`. Later, random solvable maps, persistent fire, and opponents.
+1. Grid State.
+2. Player Location
+3. If the player is dead.
+4. Bomb Location
+5. Explosion (active cells marked as explosion that kill the player if he is in them)
+6. Number of steps
+
+At every turn the player can take an action:
+1. Move (U,D,L,R)
+2. Plant Bomb
+3. Wait
+
+The bomb is a class that keeps track of the bombs location and its timer. Currently a bomb is placed with a timer value of 4 (steps).
+
+After every action/step, the env class returns the current state including all the data stated above^
+
+Cursor also generated a file "play.py" that allows you to run the environment as a game and try it for yourself.
+Controls: WASD/ARROWKEYS - Move | Space - Bomb | N or . - Wait | R - Reset | Esc - Quit 
+(this is also detailed in the game window.)
+I suggest running the game and experimenting after reading this.
+
+### Next Tasks:
+
+Right now when the player tries to walk on unwalkable terrain (block or wall) the game doesn't move the player (good) but consumes a move and doesn't provide feedback (probably bad, but might be ok, we need to decide together)
+
+This is still a very early version, serves mainly as a skeleton we can start from.
+
+I do think we can start running a simple RL Model and see if it can learn to move, explode a block and survive its own bomb as a first step. (that's what I'd want to do next if I'm the one progressing again)

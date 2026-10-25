@@ -166,7 +166,7 @@ def main() -> None:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                elif event.type == pygame.KEYDOWN and not event.repeat:
+                elif event.type == pygame.KEYDOWN and not getattr(event, "repeat", 0):
                     running = handle_keydown(env, event.key)
 
             draw(screen, font, env)
