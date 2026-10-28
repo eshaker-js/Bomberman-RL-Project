@@ -1,7 +1,65 @@
 # History
 
 ## Next History entry goes here so older entries get pushed down, newest is on top.
+## 2026-10-28 Multi-character engine (agent + 3 NPCs)
 
+**Author:** Basel Swaid  
+**Commits:** `71ca046` `6aaf256` (workflow) `d19e3cb` (code) `4b95d49` (merge PR #1)  
+**Time spent:** ~[hours]h  
+**Tests:** 50 passing (17 original unchanged + 33 new)
+
+### What I did
+* Added `WORKFLOW.md` for team handoffs
+* Agreed the multi-character rules with a teammate
+* Extended the engine to one agent plus three NPCs without changing single-player behavior
+* Had the plan reviewed first and the code verified after
+* Ran the tests locally and merged PR #1
+
+### How it works
+* `BombermanEnv()` is the old single-player game
+* `BombermanEnv(with_npcs=True)` adds NPCs 1 2 3 at `(9,1)` `(1,9)` `(9,9)` and the agent stays at `(1,1)`
+* NPC actions are passed in: `env.step(Action.RIGHT, {1: Action.UP})` and missing NPCs wait
+* Each step: characters act 0 then 1 2 3, bombs count down, due bombs explode together
+* `get_state()` adds `characters` `bombs` `events` `all_npcs_dead`
+* Events list deaths and destroyed blocks with every bomb owner involved
+* New tests live in `tests/test_multi_character.py` and the 17 old tests must stay unchanged
+* Set `PYTHONDONTWRITEBYTECODE=1` before running tests or git shows fake `.pyc` changes
+
+### Decisions I made (provisional until the whole team agrees)
+* **One bomb per character** to keep it simple (more bombs later)
+* **Characters block each other and touching does no damage** because our NPCs are bombers not monsters
+* **Agent acts first then NPCs in order** because it is simple and deterministic (simultaneous moves need extra collision rules)
+* **No chain reactions yet** so a blast stops at another bomb without setting it off
+* **Blasts hurt everyone including the owner** so bombing stays risky
+* **A dead character's bomb still explodes** so timing stays predictable
+* **Four fixed corner spawns** each with a tested escape route (random maps later)
+* **All NPCs dead is reported but is not a win yet** and agent death still ends the game
+* **Events keep every bomb owner** so we decide reward credit later instead of now
+
+### AI-assisted parts
+* Claude Code wrote the engine changes and the 33 new tests
+* The Claude supervisor reviewed the plan and the code and compared 20,000 random games against the old engine
+* I made the design calls and applied and merged the code
+* Claude helped draft this entry
+
+### Open questions
+* Third teammate needs to confirm the rules above
+* Still open: episode length, draws, random crates, exit door, buffs
+* `README.md` still says one player and `play.py` does not draw NPCs
+* Housekeeping: committed `__pycache__` and no `.gitignore`
+
+### Next task
+* If we agree on M1 below: claim one track in the chat
+* If not: build the scripted NPC bots in a separate module
+
+### Proposed milestone M1: full game + first learning agent (target 15.11)
+* **A Rules:** win loss draw, episode limit, seeded random crates, chain reactions (buffs and exit door move to M2)
+* **B NPC bots:** random bot and a rule bot that bombs crates and escapes with BFS
+* **C RL setup:** Gym wrapper, shared evaluation script with fixed seeds, logging
+* **D First results:** tabular Q-learning on a small stage and one PPO or DQN run against random bots
+* **Team call first** to decide observation, reward and episode length together since that is the graded part
+* **Done when** rules are frozen and tested and a trained agent beats random bots over 3 seeds
+* A B C can run in parallel now with one person each and D comes after
 
 ## 2026-10-25 — First playable environment
 
