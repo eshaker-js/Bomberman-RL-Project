@@ -60,15 +60,27 @@ Copy this block to the top of `history.md` and fill it in. Write it yourself, sh
 - ...
 ```
 
-## 5. `DECISIONS.md` format
+## 5. How to record a decision (inside your `history.md` entry)
 
-One line per decision. This is the raw material for the report's *Problem formulation* and *Methodology* sections, and for answering "why did you choose X?" in the presentation.
+Decisions go in the **"Decisions I made"** section of your history entry, not in a separate file. They're the raw material for the report's *Problem formulation* and *Methodology* sections, and for answering "why did you choose X?" in the presentation, so write each one in this shape:
 
 ```markdown
-| Date | Decision | Why | Alternatives considered | Who |
-|---|---|---|---|---|
-| 2026-10-25 | Bomb fuse = 4 steps | Enough to escape a range-2 blast from the start corner | 3 (too tight), 5 | <name> |
+- **<what was decided>**: <the value>
+  - Why: <the reason>
+  - Alternatives considered: <what else, and why not>
+  - Status: team-agreed / provisional (needs team OK)
 ```
+
+Example (placeholder, not a real decision):
+
+```markdown
+- **<rule or parameter>**: <value>
+  - Why: <reason>
+  - Alternatives considered: <option A (why not)>, <option B (why not)>
+  - Status: provisional
+```
+
+If a decision changes an earlier one, say so: "Replaces the fuse decision from 2026-11-02."
 
 ## 6. `EXPERIMENTS.md` format
 
