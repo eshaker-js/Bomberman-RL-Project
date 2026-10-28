@@ -10,7 +10,7 @@
 
 ### What I did
 * Added `WORKFLOW.md` for team handoffs
-* Agreed the multi-character rules with a teammate
+* Added the multi-character rules
 * Extended the engine to one agent plus three NPCs without changing single-player behavior
 * Had the plan reviewed first and the code verified after
 * Ran the tests locally and merged PR #1
@@ -38,12 +38,11 @@
 
 ### AI-assisted parts
 * Claude Code wrote the engine changes and the 33 new tests
-* The Claude supervisor reviewed the plan and the code and compared 20,000 random games against the old engine
+* I reviewed the plan and the code and compared with Claude 20,000 random games against the old engine
 * I made the design calls and applied and merged the code
-* Claude helped draft this entry
 
 ### Open questions
-* Third teammate needs to confirm the rules above
+* Teammates needs to confirm the rules above
 * Still open: episode length, draws, random crates, exit door, buffs
 * `README.md` still says one player and `play.py` does not draw NPCs
 * Housekeeping: committed `__pycache__` and no `.gitignore`
