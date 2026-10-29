@@ -315,28 +315,31 @@ class TestSimultaneousExplosions(unittest.TestCase):
 
 
 class TestBlastMeetsBomb(unittest.TestCase):
-    def test_blast_stops_at_a_live_bomb_which_keeps_counting_and_kills_later(self):
+    def test_blast_reaching_a_live_bomb_sets_it_off_in_the_same_step(self):
         env = BombermanEnv(with_npcs=True)
         place(env, 1, 1, 3)
         place(env, 2, 1, 4)
         run(env, [(B, None), (R, {1: B}), (R, None), (R, None)])
         self.assertEqual(env.bombs[1].countdown, 2)
 
-        # The agent's blast burns (1, 3), kills NPC 1 standing on its own
-        # bomb there, and stops before NPC 2 at (1, 4).
+        # The agent's blast reaches NPC 1's bomb at (1, 3) and sets it off.
+        # That blast kills NPC 1 standing on it and NPC 2 at (1, 4).
         state = env.step(W)
-        self.assertEqual(env.explosion, [(1, 1), (2, 1), (3, 1), (1, 2), (1, 3)])
-        self.assertEqual(state["events"], [death(1, 0)])
-        self.assertEqual(env.bombs, {1: Bomb(1, 3, 1)})
-        self.assertFalse(env.characters[2].dead)
-
-        # The dead owner's bomb still blocks NPC 2 and then kills it.
-        state = env.step(W, {1: R, 2: U})
-        self.assertEqual(positions(env)[1:3], [(1, 3), (1, 4)])
-        self.assertEqual(env.bombs, {})
         self.assertEqual(
-            state["events"], [block((2, 3), 1), block((1, 5), 1), death(2, 1)]
+            env.explosion,
+            [(1, 1), (2, 1), (3, 1), (1, 2), (1, 3), (2, 3), (1, 4), (1, 5)],
         )
+        self.assertEqual(
+            state["events"],
+            [
+                {"type": "bomb_triggered", "owner": 1, "triggered_by": (0,)},
+                block((2, 3), 1),
+                block((1, 5), 1),
+                death(1, 0, 1),
+                death(2, 1),
+            ],
+        )
+        self.assertEqual(env.bombs, {})
         self.assertFalse(env.dead)
 
 

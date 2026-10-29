@@ -487,50 +487,80 @@ class BombermanEnv:
                 due.append(owner)
         return due
 
+    def _blast_cells(
+        self, bomb: Bomb, bomb_cells: Mapping[tuple[int, int], int]
+    ) -> list[tuple[int, int]]:
+        """Cells one bomb burns: its own, then each ray right, left, down, up."""
+        cells = [(bomb.x, bomb.y)]
+        for dx, dy in _BLAST_DELTAS:
+            for distance in range(1, BLAST_RANGE + 1):
+                x = bomb.x + dx * distance
+                y = bomb.y + dy * distance
+                if not _inside(x, y):
+                    break
+                tile = self.grid[y][x]
+                if tile is Cell.WALL:
+                    break
+                cells.append((x, y))
+                if tile is Cell.BLOCK or (x, y) in bomb_cells:
+                    break
+        return cells
+
     def _explode(self, owners: list[int]) -> None:
-        """Burn every due bomb at once.
+        """Burn every due bomb, and every bomb their blasts set off.
 
         Each bomb burns its own cell and up to ``BLAST_RANGE`` cells each way.
         A wall ends that ray and stays. A breakable block burns and ends that
-        ray. Any other bomb's cell, exploding or not, burns and ends that ray;
-        the bomb there is not triggered and keeps counting down.
+        ray. Any other bomb's cell burns and ends that ray, and a bomb there
+        that has not exploded yet is set off in the same action.
 
-        All rays are traced against the board as it was before this action's
-        blasts, so blocks become floor only afterwards. Then the gate is
-        revealed if its crate burned, every living character on a burned cell
-        dies, and the gate opens if it is revealed and every NPC is dead.
+        Bombs explode in waves: first the due bombs, then the bombs their
+        rays reached, and so on until no new bomb is set off. Within a wave
+        bombs go in owner order. Every ray of the action is traced against
+        the board as it was before this action's blasts: blocks become floor
+        only afterwards, and every bomb on the board when the explosions
+        began still ends rays, even after it exploded in an earlier wave.
+        A burned cell is credited to the owner of every bomb that burned it.
+
+        Then the gate is revealed if its crate burned, every living character
+        on a burned cell dies, and the gate opens if it is revealed and every
+        NPC is dead.
 
         Events of one action, in this order:
-        1. ``block_destroyed`` in first-burn order, naming every owner whose
+        1. ``bomb_triggered`` by wave, then owner, naming the owners whose
+           rays in the previous wave reached the bomb
+        2. ``block_destroyed`` in first-burn order, naming every owner whose
            blast reached the block
-        2. ``gate_revealed`` when the gate's crate was destroyed
-        3. ``death`` in ID order, naming every owner whose blast reached the cell
-        4. ``gate_opened`` when the gate became open
+        3. ``gate_revealed`` when the gate's crate was destroyed
+        4. ``death`` in ID order, naming every owner whose blast reached the cell
+        5. ``gate_opened`` when the gate became open
         """
-        bomb_cells = {(bomb.x, bomb.y) for bomb in self.bombs.values()}
+        # One bomb per cell, so each bomb cell names exactly one owner.
+        bomb_cells = {(bomb.x, bomb.y): owner for owner, bomb in self.bombs.items()}
         # Burned cell -> owners whose blast reached it, in first-burn order.
         burned: dict[tuple[int, int], set[int]] = {}
+        exploded: list[int] = []
 
-        for owner in owners:
-            origin_x = self.bombs[owner].x
-            origin_y = self.bombs[owner].y
-            cells = [(origin_x, origin_y)]
-
-            for dx, dy in _BLAST_DELTAS:
-                for distance in range(1, BLAST_RANGE + 1):
-                    x = origin_x + dx * distance
-                    y = origin_y + dy * distance
-                    if not _inside(x, y):
-                        break
-                    tile = self.grid[y][x]
-                    if tile is Cell.WALL:
-                        break
-                    cells.append((x, y))
-                    if tile is Cell.BLOCK or (x, y) in bomb_cells:
-                        break
-
-            for cell in cells:
-                burned.setdefault(cell, set()).add(owner)
+        wave = owners
+        while wave:
+            exploded += wave
+            # Bomb set off by this wave -> owners whose rays reached it.
+            reached: dict[int, set[int]] = {}
+            for owner in wave:
+                for cell in self._blast_cells(self.bombs[owner], bomb_cells):
+                    burned.setdefault(cell, set()).add(owner)
+                    hit = bomb_cells.get(cell)
+                    if hit is not None and hit not in exploded:
+                        reached.setdefault(hit, set()).add(owner)
+            wave = sorted(reached)
+            for owner in wave:
+                self.events.append(
+                    {
+                        "type": "bomb_triggered",
+                        "owner": owner,
+                        "triggered_by": tuple(sorted(reached[owner])),
+                    }
+                )
 
         for (x, y), by in burned.items():
             if self.grid[y][x] is Cell.BLOCK:
@@ -543,7 +573,7 @@ class BombermanEnv:
                     }
                 )
 
-        for owner in owners:
+        for owner in exploded:
             del self.bombs[owner]
         self.explosion = list(burned)
 
