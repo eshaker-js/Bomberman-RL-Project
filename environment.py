@@ -83,6 +83,20 @@ class Bomb:
     countdown: int
 
 
+@dataclass(frozen=True)
+class Gate:
+    """The exit under the crate at ``GATE_POSITION``.
+
+    ``state`` is ``"hidden"`` while the crate stands, ``"closed"`` once it is
+    destroyed while an NPC lives, and ``"open"`` once it is destroyed and
+    every NPC is dead. The gate is ordinary floor in every state.
+    """
+
+    x: int
+    y: int
+    state: str
+
+
 @dataclass
 class Character:
     """One character on the board. ``id`` 0 is the agent, 1-3 are NPCs."""
@@ -136,6 +150,10 @@ NPC_IDS = (1, 2, 3)
 # three-cell floor corridor: down for NPC 1, up for NPCs 2 and 3.
 NPC_STARTS = {1: (9, 1), 2: (1, 9), 3: (9, 9)}
 
+# The gate hides under the central crate. The grid keeps using Cell.BLOCK and
+# Cell.EMPTY there; the gate's state is tracked separately in ``env.gate``.
+GATE_POSITION = (5, 5)
+
 
 class BombermanEnv:
     """Board, characters, and their bombs.
@@ -151,8 +169,12 @@ class BombermanEnv:
     movement for everyone, but only from the tick after they were placed.
     A bomb outlives its owner's death.
 
-    Once the agent is dead, further ``step`` calls leave the state unchanged
-    until ``reset``. Flames are remembered in ``explosion`` so a renderer can
+    ``outcome`` is decided at the end of every action: ``"win"`` when the
+    living agent stands on the open gate, ``"draw"`` when the agent and the
+    last living NPCs die on the same action, ``"loss"`` for any other agent
+    death, otherwise ``None``. All NPCs dead is not an outcome by itself.
+    Once there is an outcome (or the agent is dead), further ``step`` calls
+    leave the state unchanged until ``reset``. Flames are remembered in ``explosion`` so a renderer can
     show them until the next action. They are not checked again and do not
     pass time on their own.
 
@@ -164,8 +186,10 @@ class BombermanEnv:
     - ``dead``: whether an explosion has hit the agent
     - ``bomb``: the agent's active ``Bomb``, or ``None``
     - ``explosion``: cells burned by any bomb on the latest action, or an empty list
-    - ``events``: ``death`` and ``block_destroyed`` events of the latest action
+    - ``events``: events of the latest action, see ``_explode`` for their order
     - ``steps``: actions resolved since the last reset
+    - ``gate``: the ``Gate`` at ``GATE_POSITION``
+    - ``outcome``: ``None``, ``"win"``, ``"loss"``, or ``"draw"``
     """
 
     def __init__(self, *, with_npcs: bool = False) -> None:
@@ -176,6 +200,8 @@ class BombermanEnv:
         self.explosion: list[tuple[int, int]] = []
         self.events: list[dict] = []
         self.steps = 0
+        self.gate = Gate(*GATE_POSITION, "hidden")
+        self.outcome: str | None = None
         self.reset()
 
     # The agent-only attributes below were plain attributes before NPCs
@@ -226,7 +252,7 @@ class BombermanEnv:
         return bool(npcs) and all(npc.dead for npc in npcs)
 
     def reset(self) -> dict:
-        """Restore the map, characters, bombs, flames, events, and step count."""
+        """Restore the map, characters, bombs, flames, events, step count, gate, and outcome."""
         self.grid = [row[:] for row in _INITIAL_GRID]
         self.characters = [Character(AGENT_ID, *PLAYER_START)]
         if self.with_npcs:
@@ -237,6 +263,8 @@ class BombermanEnv:
         self.explosion = []
         self.events = []
         self.steps = 0
+        self.gate = Gate(*GATE_POSITION, "hidden")
+        self.outcome = None
         return self.get_state()
 
     def get_state(self) -> dict:
@@ -266,6 +294,8 @@ class BombermanEnv:
             # Event values are ints and tuples, so a shallow copy is enough.
             "events": [dict(event) for event in self.events],
             "all_npcs_dead": self.all_npcs_dead,
+            "gate": {"x": self.gate.x, "y": self.gate.y, "state": self.gate.state},
+            "outcome": self.outcome,
         }
 
     def step(
@@ -290,12 +320,13 @@ class BombermanEnv:
         if not isinstance(action, Action):
             raise TypeError(f"action must be an Action, not {type(action).__name__}")
         self._check_npc_actions(npc_actions)
-        if self.dead:
+        if self.dead or self.outcome is not None:
             return self.get_state()
 
         self.explosion = []
         self.events = []
         self.steps += 1
+        npcs_alive_before = self._npcs_alive()
         # Bombs placed during this action start blocking on the next one.
         blocking = {(bomb.x, bomb.y) for bomb in self.bombs.values()}
         placed: set[int] = set()
@@ -313,7 +344,26 @@ class BombermanEnv:
         due = self._tick_bombs(placed)
         if due:
             self._explode(due)
+        self._decide_outcome(npcs_alive_before)
         return self.get_state()
+
+    def _npcs_alive(self) -> bool:
+        return any(not npc.dead for npc in self.characters[1:])
+
+    def _decide_outcome(self, npcs_alive_before: bool) -> None:
+        """Set ``outcome`` after explosions, deaths, and gate updates.
+
+        The agent's death is a draw only when it takes the last living NPCs
+        with it; otherwise, including in single-player mode, it is a loss.
+        """
+        agent = self.characters[AGENT_ID]
+        if agent.dead:
+            if npcs_alive_before and not self._npcs_alive():
+                self.outcome = "draw"
+            else:
+                self.outcome = "loss"
+        elif self.gate.state == "open" and (agent.x, agent.y) == GATE_POSITION:
+            self.outcome = "win"
 
     def _check_npc_actions(self, npc_actions: Mapping[int, Action] | None) -> None:
         """Reject bad NPC input before anything changes."""
@@ -391,9 +441,16 @@ class BombermanEnv:
         the bomb there is not triggered and keeps counting down.
 
         All rays are traced against the board as it was before this action's
-        blasts, so blocks become floor only afterwards. Then every living
-        character on a burned cell dies. Events list destroyed blocks in burn
-        order, then deaths in ID order, each naming every contributing owner.
+        blasts, so blocks become floor only afterwards. Then the gate is
+        revealed if its crate burned, every living character on a burned cell
+        dies, and the gate opens if it is revealed and every NPC is dead.
+
+        Events of one action, in this order:
+        1. ``block_destroyed`` in first-burn order, naming every owner whose
+           blast reached the block
+        2. ``gate_revealed`` when the gate's crate was destroyed
+        3. ``death`` in ID order, naming every owner whose blast reached the cell
+        4. ``gate_opened`` when the gate became open
         """
         bomb_cells = {(bomb.x, bomb.y) for bomb in self.bombs.values()}
         # Burned cell -> owners whose blast reached it, in first-burn order.
@@ -435,6 +492,11 @@ class BombermanEnv:
             del self.bombs[owner]
         self.explosion = list(burned)
 
+        gate_x, gate_y = GATE_POSITION
+        if self.gate.state == "hidden" and self.grid[gate_y][gate_x] is Cell.EMPTY:
+            self.gate = Gate(gate_x, gate_y, "closed")
+            self.events.append({"type": "gate_revealed"})
+
         for character in self.characters:
             position = (character.x, character.y)
             if not character.dead and position in burned:
@@ -446,3 +508,8 @@ class BombermanEnv:
                         "killed_by": tuple(sorted(burned[position])),
                     }
                 )
+
+        # Single-player has no NPCs to defeat, so its gate never opens.
+        if self.gate.state == "closed" and self.all_npcs_dead:
+            self.gate = Gate(gate_x, gate_y, "open")
+            self.events.append({"type": "gate_opened"})
