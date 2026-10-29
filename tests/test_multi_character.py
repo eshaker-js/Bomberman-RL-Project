@@ -188,20 +188,21 @@ class TestCollisions(unittest.TestCase):
     def setUp(self):
         self.env = BombermanEnv(with_npcs=True)
 
-    def test_moving_into_a_character_is_blocked_and_spends_the_step(self):
+    def test_moving_into_a_character_shares_its_cell(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 3, 1)
         self.env.step(B)
         self.env.step(R)
-        self.assertEqual(self.env.player, (2, 1))
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (3, 1)])
         self.assertEqual(self.env.steps, 2)
         self.assertEqual(self.env.bomb.countdown, 3)
+        self.assertFalse(any(c.dead for c in self.env.characters))
 
-    def test_agent_cannot_follow_an_npc_that_moves_later(self):
+    def test_agent_can_follow_an_npc_that_moves_later(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 3, 1)
         self.env.step(R, {1: R})
-        self.assertEqual(positions(self.env)[:2], [(2, 1), (4, 1)])
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (4, 1)])
 
     def test_npc_can_enter_a_cell_vacated_earlier_in_the_step(self):
         place(self.env, 0, 3, 1)
@@ -209,17 +210,17 @@ class TestCollisions(unittest.TestCase):
         self.env.step(R, {1: R})
         self.assertEqual(positions(self.env)[:2], [(4, 1), (3, 1)])
 
-    def test_neighbours_cannot_swap(self):
+    def test_neighbours_swap_through_each_other(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 3, 1)
         self.env.step(R, {1: L})
-        self.assertEqual(positions(self.env)[:2], [(2, 1), (3, 1)])
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (2, 1)])
 
-    def test_lower_id_wins_a_shared_target_cell(self):
+    def test_both_reach_a_shared_target_cell(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 4, 1)
         self.env.step(R, {1: L})
-        self.assertEqual(positions(self.env)[:2], [(3, 1), (4, 1)])
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (3, 1)])
         self.assertFalse(any(c.dead for c in self.env.characters))
         self.assertEqual(self.env.events, [])
 

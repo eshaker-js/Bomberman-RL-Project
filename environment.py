@@ -146,8 +146,10 @@ class BombermanEnv:
     action keeps the full fuse, so its owner has ``BOMB_FUSE`` later actions
     before it explodes. Moves on the exploding action are applied first.
 
-    Each character has at most one bomb. Bombs and living characters block
-    movement; dead characters do not. A bomb outlives its owner's death.
+    Each character has at most one bomb and each cell holds at most one.
+    Characters never block each other and may share a cell. Bombs block
+    movement for everyone, but only from the tick after they were placed.
+    A bomb outlives its owner's death.
 
     Once the agent is dead, further ``step`` calls leave the state unchanged
     until ``reset``. Flames are remembered in ``explosion`` so a renderer can
@@ -275,11 +277,15 @@ class BombermanEnv:
         a missing NPC waits and an action for a dead NPC is ignored. Passing
         ``npc_actions`` without NPCs raises ``ValueError``.
 
-        Movement that hits a wall, a block, a bomb, or a living character
-        still spends the turn. Placing a bomb while one is already active
-        does too. Moves resolve one character at a time, so a character can
-        enter a cell vacated earlier in the same action, but two neighbours
-        cannot swap.
+        Movement that hits a wall, a block, or a bomb still spends the turn.
+        Placing a bomb while one is already active, or on a cell that
+        already holds a bomb, does too.
+
+        Every move is checked against the bombs that existed at the start of
+        this action, so a character may walk onto a cell where a bomb is
+        placed in the same action. Characters never block each other, so the
+        ID order only breaks one tie: two characters placing a bomb on the
+        same cell, where the lower ID places it and the other is refused.
         """
         if not isinstance(action, Action):
             raise TypeError(f"action must be an Action, not {type(action).__name__}")
@@ -290,6 +296,8 @@ class BombermanEnv:
         self.explosion = []
         self.events = []
         self.steps += 1
+        # Bombs placed during this action start blocking on the next one.
+        blocking = {(bomb.x, bomb.y) for bomb in self.bombs.values()}
         placed: set[int] = set()
         for character in self.characters:
             if character.dead:
@@ -298,7 +306,7 @@ class BombermanEnv:
                 chosen = action
             else:
                 chosen = (npc_actions or {}).get(character.id, Action.WAIT)
-            if self._apply_action(character, chosen):
+            if self._apply_action(character, chosen, blocking):
                 placed.add(character.id)
         # A bomb placed on this action does not tick. Older bombs do, after
         # every character has already moved.
@@ -326,13 +334,23 @@ class BombermanEnv:
                     f"not {type(npc_action).__name__}"
                 )
 
-    def _apply_action(self, character: Character, action: Action) -> bool:
-        """Apply one character's action. Return True when a new bomb was placed."""
+    def _apply_action(
+        self, character: Character, action: Action, blocking: set[tuple[int, int]]
+    ) -> bool:
+        """Apply one character's action. Return True when a new bomb was placed.
+
+        ``blocking`` holds the bomb cells from the start of the action. The
+        one-bomb-per-cell check uses the live bombs instead, so it also sees
+        a bomb a lower ID placed earlier in this action.
+        """
         if action is Action.WAIT:
             return False
 
         if action is Action.BOMB:
             if character.id in self.bombs:
+                return False
+            here = (character.x, character.y)
+            if any((bomb.x, bomb.y) == here for bomb in self.bombs.values()):
                 return False
             self.bombs[character.id] = Bomb(character.x, character.y, BOMB_FUSE)
             return True
@@ -340,21 +358,17 @@ class BombermanEnv:
         dx, dy = _MOVE[action]
         new_x = character.x + dx
         new_y = character.y + dy
-        if self._is_walkable(new_x, new_y):
+        if self._is_walkable(new_x, new_y, blocking):
             character.x = new_x
             character.y = new_y
         return False
 
-    def _is_walkable(self, x: int, y: int) -> bool:
+    def _is_walkable(self, x: int, y: int, blocking: set[tuple[int, int]]) -> bool:
         if not _inside(x, y):
             return False
         if self.grid[y][x] is not Cell.EMPTY:
             return False
-        if any((bomb.x, bomb.y) == (x, y) for bomb in self.bombs.values()):
-            return False
-        if any(not c.dead and (c.x, c.y) == (x, y) for c in self.characters):
-            return False
-        return True
+        return (x, y) not in blocking
 
     def _tick_bombs(self, placed: set[int]) -> list[int]:
         """Count down bombs not placed this action. Return owners now due, in ID order."""
