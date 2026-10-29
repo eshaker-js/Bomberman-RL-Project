@@ -12,6 +12,7 @@ Coordinates: ``x`` is the column from the left, ``y`` is the row from the top.
 Both start at 0. Read a cell as ``grid[y][x]``.
 """
 
+import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -154,11 +155,39 @@ NPC_STARTS = {1: (9, 1), 2: (1, 9), 3: (9, 9)}
 # Cell.EMPTY there; the gate's state is tracked separately in ``env.gate``.
 GATE_POSITION = (5, 5)
 
+# Random-crate mode keeps the walls and the crate count of the fixed map.
+CRATE_COUNT = 18
+# Each corner and the three cells next to it along both walls never hold a
+# random crate, so every spawn can escape its own opening bomb either way.
+SAFE_CELLS = frozenset(
+    {
+        (1, 1), (2, 1), (3, 1), (4, 1), (1, 2), (1, 3), (1, 4),
+        (9, 1), (8, 1), (7, 1), (6, 1), (9, 2), (9, 3), (9, 4),
+        (1, 9), (2, 9), (3, 9), (4, 9), (1, 8), (1, 7), (1, 6),
+        (9, 9), (8, 9), (7, 9), (6, 9), (9, 8), (9, 7), (9, 6),
+    }
+)
+# Sorted, so a seed always maps to the same layout.
+_RANDOM_CRATE_CELLS = tuple(
+    sorted(
+        (x, y)
+        for y in range(MAP_HEIGHT)
+        for x in range(MAP_WIDTH)
+        if _INITIAL_GRID[y][x] is not Cell.WALL
+        and (x, y) not in SAFE_CELLS
+        and (x, y) != GATE_POSITION
+    )
+)
+
 
 class BombermanEnv:
     """Board, characters, and their bombs.
 
-    ``reset`` restores the initial board. ``step`` lets every living
+    ``reset`` restores the initial board: the fixed map by default, or with
+    ``random_crates=True`` the same walls with ``CRATE_COUNT`` crates, one on
+    the gate and the rest drawn outside ``SAFE_CELLS``. The draw uses the
+    env's own RNG: ``reset(seed=...)`` reseeds it, a plain ``reset()``
+    continues it, as in Gymnasium. ``step`` lets every living
     character act in ID order (agent first, then NPCs 1, 2, 3), then counts
     down the bombs that were already on the board. A bomb placed on this
     action keeps the full fuse, so its owner has ``BOMB_FUSE`` later actions
@@ -174,9 +203,11 @@ class BombermanEnv:
     last living NPCs die on the same action, ``"loss"`` for any other agent
     death, otherwise ``None``. All NPCs dead is not an outcome by itself.
     Once there is an outcome (or the agent is dead), further ``step`` calls
-    leave the state unchanged until ``reset``. Flames are remembered in ``explosion`` so a renderer can
-    show them until the next action. They are not checked again and do not
-    pass time on their own.
+    leave the state unchanged until ``reset``.
+
+    Flames are remembered in ``explosion`` so a renderer can show them until
+    the next action. They are not checked again and do not pass time on
+    their own.
 
     Public attributes:
     - ``grid``: cells indexed as ``grid[y][x]``
@@ -192,8 +223,11 @@ class BombermanEnv:
     - ``outcome``: ``None``, ``"win"``, ``"loss"``, or ``"draw"``
     """
 
-    def __init__(self, *, with_npcs: bool = False) -> None:
+    def __init__(self, *, with_npcs: bool = False, random_crates: bool = False) -> None:
         self.with_npcs = with_npcs
+        self.random_crates = random_crates
+        # Unseeded until the first reset(seed=...), like a Gymnasium env.
+        self._rng = random.Random()
         self.grid: list[list[Cell]] = []
         self.characters: list[Character] = []
         self.bombs: dict[int, Bomb] = {}
@@ -251,9 +285,18 @@ class BombermanEnv:
         npcs = self.characters[1:]
         return bool(npcs) and all(npc.dead for npc in npcs)
 
-    def reset(self) -> dict:
-        """Restore the map, characters, bombs, flames, events, step count, gate, and outcome."""
-        self.grid = [row[:] for row in _INITIAL_GRID]
+    def reset(self, *, seed: int | None = None) -> dict:
+        """Restore the map, characters, bombs, flames, events, steps, gate, and outcome.
+
+        ``seed`` reseeds the env's RNG first. It only changes anything in
+        random-crate mode; the fixed map ignores it.
+        """
+        if seed is not None:
+            self._rng = random.Random(seed)
+        if self.random_crates:
+            self.grid = self._random_crate_grid()
+        else:
+            self.grid = [row[:] for row in _INITIAL_GRID]
         self.characters = [Character(AGENT_ID, *PLAYER_START)]
         if self.with_npcs:
             self.characters += [
@@ -266,6 +309,18 @@ class BombermanEnv:
         self.gate = Gate(*GATE_POSITION, "hidden")
         self.outcome = None
         return self.get_state()
+
+    def _random_crate_grid(self) -> list[list[Cell]]:
+        """The fixed map's walls with a new random crate layout."""
+        grid = [
+            [Cell.EMPTY if cell is Cell.BLOCK else cell for cell in row]
+            for row in _INITIAL_GRID
+        ]
+        gate_x, gate_y = GATE_POSITION
+        grid[gate_y][gate_x] = Cell.BLOCK
+        for x, y in self._rng.sample(_RANDOM_CRATE_CELLS, CRATE_COUNT - 1):
+            grid[y][x] = Cell.BLOCK
+        return grid
 
     def get_state(self) -> dict:
         """Copy of the current state. Mutating the copy does not change the env."""
