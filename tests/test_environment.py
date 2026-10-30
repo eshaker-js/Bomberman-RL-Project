@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from environment import (  # noqa: E402
+from game.environment import (  # noqa: E402
     BLAST_RANGE,
     BOMB_FUSE,
     MAP_HEIGHT,
@@ -282,7 +282,7 @@ class TestReset(unittest.TestCase):
 
 class TestHeadlessUse(unittest.TestCase):
     def test_environment_source_does_not_import_pygame(self):
-        source = (ROOT / "environment.py").read_text(encoding="utf-8")
+        source = (ROOT / "game" / "environment.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         imported = []
         for node in ast.walk(tree):
@@ -296,7 +296,7 @@ class TestHeadlessUse(unittest.TestCase):
         script = textwrap.dedent(
             """
             import sys
-            from environment import Action, BombermanEnv, Cell
+            from game.environment import Action, BombermanEnv, Cell
 
             assert "pygame" not in sys.modules
 
