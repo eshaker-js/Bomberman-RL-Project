@@ -6,8 +6,12 @@
 ## 2026-10-30 Track A game rules (movement, gate, random crates, chains)
 
 **Author:** Basel Swaid  
-**Commits:** `9e88720` `8ca580e` `5fb70a9` `2b0abef` (stages 1 to 4) `7f4c3d6` (merge PR #2)   
+**Commits:** `9e88720` `8ca580e` `5fb70a9` `2b0abef` (stages 1 to 4) `7f4c3d6` (merge PR #2) `2bae4dd` (cleanup) `694814c` (merge PR #3)
 **Tests:** 88 passing (17 original unchanged + 33 Task 1 of which 5 rewritten for the new rules + 38 new)
+
+### Repository cleanup 
+The repo is now organized into folders and nothing in the game or the tests behaves differently. The engine moved from `environment.py` to `game/environment.py` and the Pygame client from `play.py` to `game/play.py`, with an empty `game/__init__.py` so `game` works as a package. This file moved from `history.md` to `docs/history.md` and the checklist from `WORKFLOW.md` to `docs/WORKFLOW.md`, while `README.md` and `requirements.txt` stay in the root and all tests stay in `tests/`. Every move kept its git history, and `environment.py` and `history.md` are byte for byte the same as before. The only line changes are imports (`from environment import` became `from game.environment import`) and file paths in the tests, `play.py`, the README and the checklist, so Jan's 17 original tests check exactly what they checked before. I also added a `.gitignore` and stopped tracking the auto generated `__pycache__` files, so running the game or the tests no longer shows fake changes in git and the `PYTHONDONTWRITEBYTECODE` trick is not needed anymore. 
+**What changes for everyone:** start the game with `python -m game.play` from the repo folder (`python play.py` no longer works), import the engine in new code with `from game.environment import ...`, and keep `game/__init__.py` empty. New folders like `agents/` for bots and `rl/` for the Gym wrapper will be created by the tasks that need them.
 
 ### What I did
 * Settled the track A rules
