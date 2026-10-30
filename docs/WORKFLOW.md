@@ -8,7 +8,7 @@ Every session on this project follows this file. It exists so that at the end of
 
 ## 1. Before you start
 
-- [ ] `git pull`. Read the latest `history.md` entry (and older ones if you've been away).
+- [ ] `git pull`. Read the latest `docs/history.md` entry (and older ones if you've been away).
 - [ ] Run the tests: `python -m unittest discover -s tests -v`. If they fail on a fresh pull, **stop and tell the group**. Don't build on a broken state.
 - [ ] **Claim your task** in the group chat: *"Working on X until <day>."* One person per task, so two people never code the same thing on the same evening.
 - [ ] Check that your git identity is your own real name and that it's the one you always use:
@@ -26,11 +26,11 @@ Every session on this project follows this file. It exists so that at the end of
 - [ ] No generated files committed (`__pycache__/`, `.pyc`, model checkpoints, logs). These belong in `.gitignore`.
 - [ ] Commit messages say *what* changed: `Add chain explosions + tests`, not `fix` or `update`.
 - [ ] You can explain every line you're pushing. AI-generated code is allowed. Code nobody on the team understands is a risk in the presentation Q&A.
-- [ ] Write your `history.md` entry (template in §4), **newest on top**.
+- [ ] Write your `docs/history.md` entry (template in §4), **newest on top**.
 
 ## 4. `history.md` entry template
 
-Copy this block to the top of `history.md` and fill it in. Write it yourself, short and plain.
+Copy this block to the top of `docs/history.md` and fill it in. Write it yourself, short and plain.
 
 ```markdown
 ## YYYY-MM-DD — <short title>

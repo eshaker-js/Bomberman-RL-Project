@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from environment import GATE_POSITION, Action, BombermanEnv, Cell  # noqa: E402
+from game.environment import GATE_POSITION, Action, BombermanEnv, Cell  # noqa: E402
 
 U, D, L, R = Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT
 W, B = Action.WAIT, Action.BOMB

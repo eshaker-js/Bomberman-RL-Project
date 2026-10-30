@@ -1,8 +1,8 @@
 # Bomberman RL
 
-A step-based Bomberman sandbox. The rules live in `environment.py`. `play.py` is a Pygame window and keyboard client. There is no learning algorithm yet. A later agent can call `BombermanEnv.step(action)` and `BombermanEnv.reset()` without opening a window.
+A step-based Bomberman sandbox. The rules live in `game/environment.py`. `game/play.py` is a Pygame window and keyboard client. There is no learning algorithm yet. A later agent can call `BombermanEnv.step(action)` and `BombermanEnv.reset()` without opening a window.
 
-The board is a fixed 11×11 map: indestructible border and pillar walls, some breakable blocks, and one player at `(1, 1)`. Map size, bomb fuse, and blast range are constants at the top of `environment.py`.
+The board is a fixed 11×11 map: indestructible border and pillar walls, some breakable blocks, and one player at `(1, 1)`. Map size, bomb fuse, and blast range are constants at the top of `game/environment.py`.
 
 ## Install
 
@@ -16,8 +16,10 @@ pip install -r requirements.txt
 
 ## Play
 
+From the repository root:
+
 ```text
-python play.py
+python -m game.play
 ```
 
 ## Controls
@@ -46,10 +48,10 @@ A bomb starts with countdown 4 and does not count down on the turn it is placed.
 python -m unittest discover -s tests -v
 ```
 
-The tests drive `environment.py` only. They do not open a window.
+The tests drive `game/environment.py` only. They do not open a window.
 
 ## Layout
 
-- `environment.py` — board, movement, bomb, explosions, death, `reset`, `step`
-- `play.py` — drawing and keyboard input
+- `game/environment.py` — board, movement, bomb, explosions, death, `reset`, `step`
+- `game/play.py` — drawing and keyboard input
 - `tests/test_environment.py` — headless rule tests

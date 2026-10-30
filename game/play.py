@@ -12,7 +12,7 @@ The clock only keeps the window responsive. It never calls ``step``.
 
 import pygame
 
-from environment import MAP_HEIGHT, MAP_WIDTH, Action, BombermanEnv, Cell
+from game.environment import MAP_HEIGHT, MAP_WIDTH, Action, BombermanEnv, Cell
 
 CELL_SIZE = 48
 HUD_HEIGHT = 136
