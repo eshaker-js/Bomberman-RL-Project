@@ -188,20 +188,21 @@ class TestCollisions(unittest.TestCase):
     def setUp(self):
         self.env = BombermanEnv(with_npcs=True)
 
-    def test_moving_into_a_character_is_blocked_and_spends_the_step(self):
+    def test_moving_into_a_character_shares_its_cell(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 3, 1)
         self.env.step(B)
         self.env.step(R)
-        self.assertEqual(self.env.player, (2, 1))
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (3, 1)])
         self.assertEqual(self.env.steps, 2)
         self.assertEqual(self.env.bomb.countdown, 3)
+        self.assertFalse(any(c.dead for c in self.env.characters))
 
-    def test_agent_cannot_follow_an_npc_that_moves_later(self):
+    def test_agent_can_follow_an_npc_that_moves_later(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 3, 1)
         self.env.step(R, {1: R})
-        self.assertEqual(positions(self.env)[:2], [(2, 1), (4, 1)])
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (4, 1)])
 
     def test_npc_can_enter_a_cell_vacated_earlier_in_the_step(self):
         place(self.env, 0, 3, 1)
@@ -209,17 +210,17 @@ class TestCollisions(unittest.TestCase):
         self.env.step(R, {1: R})
         self.assertEqual(positions(self.env)[:2], [(4, 1), (3, 1)])
 
-    def test_neighbours_cannot_swap(self):
+    def test_neighbours_swap_through_each_other(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 3, 1)
         self.env.step(R, {1: L})
-        self.assertEqual(positions(self.env)[:2], [(2, 1), (3, 1)])
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (2, 1)])
 
-    def test_lower_id_wins_a_shared_target_cell(self):
+    def test_both_reach_a_shared_target_cell(self):
         place(self.env, 0, 2, 1)
         place(self.env, 1, 4, 1)
         self.env.step(R, {1: L})
-        self.assertEqual(positions(self.env)[:2], [(3, 1), (4, 1)])
+        self.assertEqual(positions(self.env)[:2], [(3, 1), (3, 1)])
         self.assertFalse(any(c.dead for c in self.env.characters))
         self.assertEqual(self.env.events, [])
 
@@ -314,28 +315,31 @@ class TestSimultaneousExplosions(unittest.TestCase):
 
 
 class TestBlastMeetsBomb(unittest.TestCase):
-    def test_blast_stops_at_a_live_bomb_which_keeps_counting_and_kills_later(self):
+    def test_blast_reaching_a_live_bomb_sets_it_off_in_the_same_step(self):
         env = BombermanEnv(with_npcs=True)
         place(env, 1, 1, 3)
         place(env, 2, 1, 4)
         run(env, [(B, None), (R, {1: B}), (R, None), (R, None)])
         self.assertEqual(env.bombs[1].countdown, 2)
 
-        # The agent's blast burns (1, 3), kills NPC 1 standing on its own
-        # bomb there, and stops before NPC 2 at (1, 4).
+        # The agent's blast reaches NPC 1's bomb at (1, 3) and sets it off.
+        # That blast kills NPC 1 standing on it and NPC 2 at (1, 4).
         state = env.step(W)
-        self.assertEqual(env.explosion, [(1, 1), (2, 1), (3, 1), (1, 2), (1, 3)])
-        self.assertEqual(state["events"], [death(1, 0)])
-        self.assertEqual(env.bombs, {1: Bomb(1, 3, 1)})
-        self.assertFalse(env.characters[2].dead)
-
-        # The dead owner's bomb still blocks NPC 2 and then kills it.
-        state = env.step(W, {1: R, 2: U})
-        self.assertEqual(positions(env)[1:3], [(1, 3), (1, 4)])
-        self.assertEqual(env.bombs, {})
         self.assertEqual(
-            state["events"], [block((2, 3), 1), block((1, 5), 1), death(2, 1)]
+            env.explosion,
+            [(1, 1), (2, 1), (3, 1), (1, 2), (1, 3), (2, 3), (1, 4), (1, 5)],
         )
+        self.assertEqual(
+            state["events"],
+            [
+                {"type": "bomb_triggered", "owner": 1, "triggered_by": (0,)},
+                block((2, 3), 1),
+                block((1, 5), 1),
+                death(1, 0, 1),
+                death(2, 1),
+            ],
+        )
+        self.assertEqual(env.bombs, {})
         self.assertFalse(env.dead)
 
 
