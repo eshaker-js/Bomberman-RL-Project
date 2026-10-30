@@ -17,9 +17,8 @@ Every session on this project follows this file. It exists so that at the end of
 ## 2. While working
 
 - [ ] **Rule change?** (fuse, blast, movement, buffs, win conditions, rewards…) Update `RULES.md` **and** add or adjust a test for it in the same commit. Code, rules doc and tests must never disagree.
-- [ ] **Made a design decision?** (reward values, observation format, algorithm choice, hyperparameter ranges…) Add a line to `DECISIONS.md` (see §5). The report's formulation and methodology sections are built from this file.
+- [ ] **Made a design decision?** (reward values, observation format, algorithm choice, hyperparameter ranges…) update the team (optional: see §5). The report's formulation and methodology sections are built from this file.
 - [ ] **Used external code** (a library, a snippet from a blog, a repo, a paper's implementation)? Add it to `CREDITS.md` with a link. The guideline forbids plagiarism; citing what you reused is how you stay clear of it.
-- [ ] **Ran an experiment?** Log it in `EXPERIMENTS.md` (see §6). Failed and boring runs too, since the comparison is graded, not just the winner.
 
 ## 3. Before you push
 
@@ -81,15 +80,3 @@ Example (placeholder, not a real decision):
 ```
 
 If a decision changes an earlier one, say so: "Replaces the fuse decision from 2026-11-02."
-
-## 6. `EXPERIMENTS.md` format
-
-One row per training run. Never delete rows, even for failed runs.
-
-```markdown
-| Date | Who | Commit | Algorithm | Config file | Seed(s) | Map(s) | Result (eval metrics) | Notes |
-|---|---|---|---|---|---|---|---|---|
-```
-
-- Every run must be reproducible from its row: **commit hash + config + seed**.
-- Evaluation numbers come only from the shared evaluation script, so results are comparable across people.
