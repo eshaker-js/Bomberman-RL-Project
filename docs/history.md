@@ -5,7 +5,7 @@
 ## 2026-10-31 Track B baseline bots (random bot + rule bot)
 
 **Author:** Joelle  
-**Commits:** (fill in after committing)  
+**Commits:** 755fdca (bots, match runner, evaluation, tests)  
 **Tests:** 104 passing (88 earlier tests unchanged + 16 new in `tests/test_bots.py`)
 
 ### What I did
