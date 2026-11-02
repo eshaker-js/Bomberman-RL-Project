@@ -50,22 +50,22 @@ def validate(name: str, rows: tuple[str, ...], size: tuple[int, int] | None = No
 # ---------------------------------------------------------------- map tiles
 
 FLOOR = (
-    "3333333333333333",
-    "3333333333333333",
-    "33b3333333333333",
-    "3333333333333b33",
-    "3333333333333333",
-    "333333b333333333",
-    "3333333333333333",
-    "3333333333333333",
-    "33333333333b3333",
-    "3b33333333333333",
-    "3333333333333333",
-    "3333333b33333333",
-    "3333333333333333",
-    "333333333333333b",
-    "3333b33333333333",
-    "3333333333333333",
+    "5555555555555555",
+    "5555555555555555",
+    "5505555555555555",
+    "5555555555555055",
+    "5555555555555555",
+    "5555550555555555",
+    "5555555555555555",
+    "5555555555555555",
+    "5555555555505555",
+    "5055555555555555",
+    "5555555555555555",
+    "5555555055555555",
+    "5555555555555555",
+    "5555555555555550",
+    "5555055555555555",
+    "5555555555555555",
 )
 
 WALL = (
@@ -192,6 +192,20 @@ FLAME_MEDIUM = (
 # Growing burst, then the steady flame.
 FLAME_FRAMES = (FLAME_SMALL, FLAME_MEDIUM, FLAME_STEADY)
 
+# A lingering flame fades as its remaining ticks drop: the steady flame
+# recoloured, level 1 (slightly dimmer) to FLAME_FADE_LEVELS (embers).
+FLAME_FADE_COLORS = (
+    {"7": "a", "a": "9"},
+    {"7": "9", "a": "9", "9": "8"},
+    {"7": "8", "a": "8", "9": "2", "8": "2"},
+)
+FLAME_FADE_LEVELS = len(FLAME_FADE_COLORS)
+
+
+def flame_fade(level: int) -> tuple[str, ...]:
+    """The steady flame at fade ``level`` (1 to ``FLAME_FADE_LEVELS``)."""
+    return apply_colors(FLAME_STEADY, FLAME_FADE_COLORS[level - 1])
+
 # ----------------------------------------------------------- breaking crate
 # Drawn over the floor (and over the flames) on the tick a crate is destroyed.
 
@@ -239,22 +253,22 @@ CRATE_BREAK = (
 # A hidden gate is not drawn at all: its crate is still on the grid.
 
 GATE_CLOSED = (
-    "0555555555555550",
-    "5666666666666665",
-    "5655555555555565",
-    "565d00d00d00d565",
-    "565d00d00d00d565",
-    "565d00d00d00d565",
-    "565d00d00d00d565",
-    "565dddddddddd565",
-    "565d00d00d00d565",
-    "565d00d00d00d565",
-    "565d00d00d00d565",
-    "565d00d00d00d565",
-    "5655555555555565",
-    "5666666666666665",
-    "5555555555555555",
-    "0555555555555550",
+    "0000000000000000",
+    "0666666666666660",
+    "0655555555555560",
+    "065d00d00d00d560",
+    "065d00d00d00d560",
+    "065d00d00d00d560",
+    "065d00d00d00d560",
+    "065dddddddddd560",
+    "065d00d00d00d560",
+    "065d00d00d00d560",
+    "065d00d00d00d560",
+    "065d00d00d00d560",
+    "0655555555555560",
+    "0666666666666660",
+    "0666666666666660",
+    "0000000000000000",
 )
 
 _GATE_OPEN_BASE = (
@@ -434,6 +448,8 @@ def all_tile_sprites() -> dict[str, tuple[str, ...]]:
     sprites = dict(TILE_SPRITES)
     sprites.update({f"bomb{i}": rows for i, rows in enumerate(BOMB_FRAMES)})
     sprites.update({f"flame{i}": rows for i, rows in enumerate(FLAME_FRAMES)})
+    sprites.update({f"flame_fade{level}": flame_fade(level)
+                    for level in range(1, FLAME_FADE_LEVELS + 1)})
     sprites["gate_closed"] = GATE_CLOSED
     sprites["gate_flash"] = GATE_FLASH
     sprites.update({f"crate_break{i}": rows for i, rows in enumerate(CRATE_BREAK)})

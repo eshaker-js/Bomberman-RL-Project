@@ -3,11 +3,13 @@
 The bots are called exactly as ``agents/match.py`` calls them: each one is
 reset with ``bot_seed(seed, id)``, and every tick each living bot gets the
 same current state and its own ID. The human always controls character 0.
+Every mode plays the real game's timing, ``GAME_RULES`` (bomb fuse and
+lingering flames), so humans and the agent play the same rules.
 """
 
 from agents import RandomBot, RuleBot
 from agents.match import bot_seed
-from game.environment import AGENT_ID, NPC_IDS, Action, BombermanEnv
+from game.environment import AGENT_ID, GAME_RULES, NPC_IDS, Action, BombermanEnv
 
 MODE_FREE = "free"
 MODE_BOTS = "bots"
@@ -30,12 +32,12 @@ class GameSession:
 
     def __init__(self, mode: str, seed: int, opponents: str = "rule") -> None:
         if mode == MODE_FREE:
-            self.env = BombermanEnv(random_crates=True)
+            self.env = BombermanEnv(random_crates=True, **GAME_RULES)
             self.bots = {}
         elif mode == MODE_BOTS:
             if opponents not in OPPONENTS:
                 raise ValueError(f"unknown opponents {opponents!r}")
-            self.env = BombermanEnv(with_npcs=True, random_crates=True)
+            self.env = BombermanEnv(with_npcs=True, random_crates=True, **GAME_RULES)
             self.bots = {
                 npc_id: bot_class()
                 for npc_id, bot_class in zip(NPC_IDS, OPPONENTS[opponents])

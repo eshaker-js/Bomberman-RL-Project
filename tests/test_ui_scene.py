@@ -72,7 +72,7 @@ class TestStaticScene(unittest.TestCase):
         for item in tiles:
             self.assertEqual(item.key[1], TILE_NAMES[state["grid"][item.y // 16][item.x // 16]])
         self.assertEqual(cells(items, LAYER_BOMB), sorted((b["x"], b["y"]) for b in state["bombs"]))
-        self.assertEqual(cells(items, LAYER_FLAME), sorted(state["explosion"]))
+        self.assertEqual(cells(items, LAYER_FLAME), sorted((f["x"], f["y"]) for f in state["flames"]))
         alive = [c for c in state["characters"] if not c["dead"]]
         self.assertEqual(cells(items, LAYER_CHARACTER), sorted((c["x"], c["y"]) for c in alive))
         drawn_ids = [i.key[1] for i in items if i.layer == LAYER_CHARACTER]
@@ -317,7 +317,8 @@ class TestAnimatedScene(unittest.TestCase):
                 if not cur["explosion"]:
                     continue
                 items = scene(prev, cur, 0.0, initial_facings(cur))
-                self.assertEqual(cells(items, LAYER_FLAME), sorted(cur["explosion"]))
+                self.assertEqual(cells(items, LAYER_FLAME),
+                                 sorted((f["x"], f["y"]) for f in cur["flames"]))
                 self.assertEqual(cells(items, LAYER_BOMB),
                                  sorted((b["x"], b["y"]) for b in cur["bombs"]))
                 return

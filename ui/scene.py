@@ -20,6 +20,7 @@ from typing import NamedTuple
 
 from game.environment import BOMB_FUSE, Cell
 
+from ui.art import FLAME_FADE_LEVELS
 from ui.config import TILE
 
 LAYER_TILE = 0
@@ -102,6 +103,22 @@ def flame_frame(t: float) -> int | str:
     return "steady"
 
 
+def flame_fade_level(ticks_left: int, flame_ticks: int) -> int:
+    """0 for a flame burning its first tick, then one level dimmer per tick burned.
+
+    Capped at ``FLAME_FADE_LEVELS``. It depends on the state only, so a
+    lingering flame looks the same all through a tick.
+    """
+    return min(max(flame_ticks - ticks_left, 0), FLAME_FADE_LEVELS)
+
+
+def flame_key(level: int, grow: int | str = "steady") -> tuple:
+    """Sprite of a flame: growing/steady at level 0, else a faded steady flame."""
+    if level == 0:
+        return ("flame", grow)
+    return ("flame", "fade", level)
+
+
 def death_frame(t: float) -> int:
     return min(int(t * DEATH_FRAME_COUNT), DEATH_FRAME_COUNT - 1)
 
@@ -170,8 +187,10 @@ def static_scene(state: dict, facings: dict[int, str]) -> list[Item]:
     items = _tiles(state) + _gate(state)
     for bomb in state["bombs"]:
         items.append(Item(LAYER_BOMB, ("bomb", 0), bomb["x"] * TILE, bomb["y"] * TILE))
-    for x, y in sorted(state["explosion"]):
-        items.append(Item(LAYER_FLAME, ("flame", "steady"), x * TILE, y * TILE))
+    flame_ticks = state["rules"]["flame_ticks"]
+    for flame in state["flames"]:
+        level = flame_fade_level(flame["ticks_left"], flame_ticks)
+        items.append(Item(LAYER_FLAME, flame_key(level), flame["x"] * TILE, flame["y"] * TILE))
     for c in draw_order(state["characters"]):
         if not c["dead"]:
             facing = facings.get(c["id"], DEFAULT_FACING)
@@ -185,8 +204,11 @@ def scene(prev: dict, cur: dict, t: float, facings: dict[int, str]) -> list[Item
 
     Bombs, flames, crates and the gate are those of ``cur`` from the start of
     the tick (they are the result of the tick); only characters move between
-    the two states. Short effects (crate debris, gate blink, death) end
-    within the tick.
+    the two states. Freshly burned cells grow into a steady flame; flames
+    still burning from earlier ticks show their fade level the whole tick;
+    a flame that went out (in ``prev`` but not ``cur``) is gone from the
+    start. Short effects (crate debris, gate blink, death) end within the
+    tick.
     """
     t = min(max(t, 0.0), 1.0)
     items = _tiles(cur) + _gate(cur)
@@ -195,9 +217,14 @@ def scene(prev: dict, cur: dict, t: float, facings: dict[int, str]) -> list[Item
         items.append(Item(LAYER_BOMB, ("bomb", bomb_frame(bomb["countdown"], t)),
                           bomb["x"] * TILE, bomb["y"] * TILE))
 
-    flame = flame_frame(t)
-    for x, y in sorted(cur["explosion"]):
-        items.append(Item(LAYER_FLAME, ("flame", flame), x * TILE, y * TILE))
+    grow = flame_frame(t)
+    flame_ticks = cur["rules"]["flame_ticks"]
+    fresh = set(cur["explosion"])
+    for flame in cur["flames"]:
+        cell = (flame["x"], flame["y"])
+        level = flame_fade_level(flame["ticks_left"], flame_ticks)
+        key = flame_key(level, grow if cell in fresh else "steady")
+        items.append(Item(LAYER_FLAME, key, cell[0] * TILE, cell[1] * TILE))
 
     if t < CRATE_BREAK_END:
         frame = 0 if t < CRATE_BREAK_SPLIT else 1
