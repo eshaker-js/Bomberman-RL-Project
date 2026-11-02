@@ -2,6 +2,78 @@
 
 ## Next History entry goes here so older entries get pushed down, newest is on top.
 
+## 2026-11-02 Retro UI and real game timing (Tasks 4 and 5) + track B review
+
+**Author:** Basel Swaid  
+**Commits:** `e95e102` (merged Joelle's PR #4) `b78935e` `05c5c60` `588e56f` (UI) `efacc27` (merge PR #5) `7a020d8` `1e887b1` `59733c2` (timing) `03cb261` (merge PR #6)  
+**Tests:** 256 passing (104 before today + 109 UI + 43 timing) and UI tests skip cleanly without pygame
+
+### What I did
+* Built a playable retro game window in `ui/` (Task 4)
+* Measured the original game's timing from a gameplay video and matched our game to it (Task 5)
+* Updated the rule bot so it understands the new timing
+* Each task was planned first, reviewed, built in stages and verified before merging
+
+### How it works
+* Start the game with `python -m ui` from the repo folder
+* Start screen has three modes
+  * **Free World** you alone with no bots to test the rules
+  * **Player vs Bots** you against 3 bots (Random, Rule or Mixed)
+  * **Agent Spectator** a NOT READY placeholder until we have a trained agent
+* The game ticks every 250 ms by itself and the last key you pressed is your move (holding a key keeps walking and no key means wait)
+* Characters slide between cells and flames fade out as they burn down
+* The UI only reads the game state and sends actions so it never changes any rule and training never opens a window
+* Real game timing lives in one place: `GAME_RULES` in `game/environment.py` (fuse 9 ticks and flames 4 ticks)
+* `BombermanEnv()` still uses the old values (fuse 4 and flames 1) so all old tests are untouched and the real game uses `BombermanEnv(**GAME_RULES)`
+* Flames stay deadly while they burn: walking into a burning cell kills you
+* The state now has `flames` (burning cells with ticks left) and `rules` (the timing this game uses)
+* `game/play.py` is still the simple debug client with the old rules
+
+### Decisions I made
+
+- **Auto tick every 250 ms in the UI**
+  - Why: feels like a real game and matches the measured walking speed of the original (0.26 s per tile)
+  - Alternatives considered: tick only when a key is pressed (turn based, does not feel like the original)
+  - Status: provisional (needs team OK)
+
+- **Bomb fuse 9 ticks (about 2.25 s)**
+  - Why: measured from the original game, a longer tick would have made walking twice as slow
+  - Alternatives considered: keeping 4 ticks with a longer tick (slow motion and still only 4 steps to escape)
+  - Status: provisional (needs team OK)
+
+- **Flames stay deadly for 4 ticks (about 1 s)**
+  - Why: measured from the original game where flames kill while they burn
+  - Alternatives considered: flames only visual after the first tick (confusing to walk through fire)
+  - Status: provisional (needs team OK)
+
+- **Fuse and flames are settings with the old values as defaults**
+  - Why: old tests stay untouched and humans and the agent play the same `GAME_RULES`
+  - Alternatives considered: changing the constants (would break most existing tests)
+  - Status: provisional (needs team OK)
+
+- **I approved updating the rule bot** (`agents/rule_bot.py` only, minimal lines)
+  - Why: the bot had the old fuse built in and walked into burning flames, under the new rules it won only 3.5% and now wins 100% with no self kills
+  - Alternatives considered: 
+  - Status: 
+
+- **Retro look: pixel art and font drawn in code with the PICO-8 palette, dark grey floor**
+  - Why: our own art with no image files or licenses, the grey floor keeps bombs visible (black hid them)
+  - Alternatives considered: free art packs (not ours), black floor (bombs disappeared)
+  - Status: provisional (needs team OK)
+
+- **Game name is a placeholder "BOMB ARENA"** in one constant in `ui/config.py`
+  - Status: open, the team picks the real name
+
+### ANY OBJECTIONS ON:
+* **Game timing:** the bomb now explodes after 9 ticks (about 2.25 s) and flames stay deadly for 4 ticks (about 1 s), measured from the original game. The agent will learn with these values through `GAME_RULES`
+* **Rule bot update:** I changed `agents/rule_bot.py` (only the needed lines) so it reads the timing from the game and avoids burning flames. Under the new timing it went from 3.5% wins to 100% and with the old timing it plays exactly as before
+* **UI and how the game plays:** `python -m ui` with three modes (Free World, Player vs Bots, Agent Spectator placeholder), an automatic tick every 250 ms (your last key is your move and no key means wait), smooth movement and fading flames
+* **How the game looks:** retro pixel art drawn in code with the PICO-8 colors, four original hooded characters (blue, red, green, orange), dark grey floor, black border on the closed gate, placeholder name "BOMB ARENA"
+
+### AI-assisted parts
+* Claude Code wrote the UI, the timing changes, the bot update and all new tests
+* The Claude supervisor planned the specs, reviewed every plan, measured the original game's timing frame by frame from my video, and verified each patch (default rules identical to Jan's original engine on 20,000 games, the new flame rules checked over 1,200 full games)
+
 ## 2026-10-31 Track B baseline bots (random bot + rule bot)
 
 **Author:** Joelle  
