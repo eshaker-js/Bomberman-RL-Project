@@ -22,7 +22,7 @@ class Sprites:
     Keys (also used by ``ui.scene``):
     - ``("tile", "floor" | "wall" | "crate")``
     - ``("bomb", frame)``
-    - ``("flame", 0 | 1 | "steady")``
+    - ``("flame", 0 | 1 | "steady")`` and ``("flame", "fade", level)``
     - ``("debris", frame)`` for a crate breaking
     - ``("gate", "closed", 0)``, ``("gate", "open", frame)``, ``("gate", "flash", 0)``
     - ``("char", id, facing, frame)`` with facing down, up, left or right
@@ -49,6 +49,8 @@ class Sprites:
         if kind == "bomb":
             return surface_from_rows(art.BOMB_FRAMES[key[1]])
         if kind == "flame":
+            if key[1] == "fade":
+                return surface_from_rows(art.flame_fade(key[2]))
             frame = key[1]
             return surface_from_rows(art.FLAME_STEADY if frame == "steady" else art.FLAME_FRAMES[frame])
         if kind == "debris":

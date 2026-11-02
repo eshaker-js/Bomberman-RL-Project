@@ -16,13 +16,13 @@ if str(ROOT) not in sys.path:
 
 from agents import RandomBot, RuleBot  # noqa: E402
 from agents.match import bot_seed  # noqa: E402
-from game.environment import AGENT_ID, NPC_IDS, Action, BombermanEnv  # noqa: E402
+from game.environment import AGENT_ID, GAME_RULES, NPC_IDS, Action, BombermanEnv  # noqa: E402
 from ui.session import MODE_BOTS, MODE_FREE, GameSession  # noqa: E402
 
 
 def reference_states(seed: int, bot_classes, human_actions):
     """States of a game played the way agents/match.py plays one."""
-    env = BombermanEnv(with_npcs=True, random_crates=True)
+    env = BombermanEnv(with_npcs=True, random_crates=True, **GAME_RULES)
     state = env.reset(seed=seed)
     bots = {npc_id: cls() for npc_id, cls in zip(NPC_IDS, bot_classes)}
     for npc_id, bot in bots.items():
@@ -46,7 +46,7 @@ class TestModes(unittest.TestCase):
         self.assertTrue(session.env.random_crates)
         self.assertEqual(session.bots, {})
         self.assertEqual(len(session.cur["characters"]), 1)
-        self.assertEqual(session.cur, BombermanEnv(random_crates=True).reset(seed=5))
+        self.assertEqual(session.cur, BombermanEnv(random_crates=True, **GAME_RULES).reset(seed=5))
 
     def test_player_vs_bots_has_three_npcs_and_random_crates(self):
         session = GameSession(MODE_BOTS, seed=5)
@@ -54,7 +54,8 @@ class TestModes(unittest.TestCase):
         self.assertTrue(session.env.random_crates)
         self.assertEqual(sorted(session.bots), list(NPC_IDS))
         self.assertEqual(
-            session.cur, BombermanEnv(with_npcs=True, random_crates=True).reset(seed=5)
+            session.cur,
+            BombermanEnv(with_npcs=True, random_crates=True, **GAME_RULES).reset(seed=5),
         )
 
     def test_default_opponents_are_rule_bots(self):
@@ -139,7 +140,7 @@ class TestAdvance(unittest.TestCase):
     def test_over_after_agent_death(self):
         session = GameSession(MODE_FREE, seed=4)
         session.advance(Action.BOMB)
-        for _ in range(4):
+        for _ in range(GAME_RULES["bomb_fuse"]):
             session.advance(Action.WAIT)
         self.assertTrue(session.cur["dead"])
         self.assertEqual(session.cur["outcome"], "loss")
