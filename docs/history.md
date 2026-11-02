@@ -2,6 +2,69 @@
 
 ## Next History entry goes here so older entries get pushed down, newest is on top.
 
+## 2026-10-31 Track B baseline bots (random bot + rule bot)
+
+**Author:** Joelle  
+**Commits:** 755fdca (bots, match runner, evaluation, tests)  
+**Tests:** 104 passing (88 earlier tests unchanged + 16 new in `tests/test_bots.py`)
+
+### What I did
+- Added the `agents/` package with a random bot and a rule-based bot
+- Added `agents/match.py` to play one seeded game between any four bots and record what happened
+- Added `agents/evaluate.py` to compare the bots over many seeded games
+- Added `tests/test_bots.py`
+- `game/environment.py` and all earlier tests are untouched
+
+### How it works
+- Every bot has `reset(seed)` and `act(state, me)`: it reads `env.get_state()` and the ID it controls and returns one `Action`, so the same bot can sit in any seat (agent or NPC)
+- `RandomBot`: a uniformly random action out of all six every turn, seeded
+- `RuleBot` re-plans every turn in this order: survive, take the open gate (agent only), bomb if it hits a crate or an opponent and an escape exists, walk to the nearest such bomb spot, wait
+- Survival: it predicts on which action each bomb explodes, including chain reactions, and searches over (cell, time) for a way to a cell no blast will reach
+- It also assumes any opponent without an active bomb might drop one this action, and prefers moves that stay safe even then
+- Play a game: `play_game({0: RuleBot(), 1: RandomBot(), 2: RandomBot(), 3: RandomBot()}, seed=0)`
+- Compare the bots: `python -m agents.evaluate` (add `--games 500` for more)
+
+### Results (`python -m agents.evaluate --games 200`, seeds 0..199)
+- Agent seat vs 3 random NPCs: rule bot wins 100% (0 suicides, 8.6 crates per game); random bot wins 0%, loses 96.5%, draws 3.5%, and always dies by its own bomb
+- Mixed table (2 rule + 2 random, seats rotated): rule bots died 0%, random bots 87%
+- 4 rule bots against each other: nobody died in 40 games, all hit the 400 step limit
+- Rule bot alone (single player): clears all 18 crates and never dies (30 seeds, fixed and random maps)
+
+### Decisions I made
+- **Bot interface**: `reset(seed)` + `act(state, me)` reading only `get_state()`
+  - Why: the bots stay outside the engine and the Gym wrapper can swap any of them into any NPC seat
+  - Alternatives considered: giving bots the env object (they could change the game by accident)
+  - Status: provisional (needs team OK)
+- **Random bot uses all six actions equally, including BOMB**
+  - Why: the weakest possible baseline, no knowledge at all
+  - Alternatives considered: a random bot that avoids suicide (that is already a small rule bot)
+  - Status: provisional (needs team OK)
+- **Rule bot is cautious about opponents' next bomb**
+  - Why: without it the rule bot lost 1 of 60 games (seed 0): an NPC bombed the only exit of the corner it fled into. With it: 0 losses in 200 games
+  - Alternatives considered: ignoring bombs not yet placed (simpler, 1.7% losses)
+  - Status: provisional (needs team OK)
+- **The 400 step limit lives in `agents/match.py` only and is reported as `"timeout"`**
+  - Why: evaluation needs games to end; the training episode limit is still the Gym wrapper's job (track C)
+  - Alternatives considered: adding a limit to the engine (against the track A decision)
+  - Status: provisional (needs team OK)
+- **Each bot's seed is `game_seed * 1000 + character_id`**
+  - Why: every bot in every game gets a different but reproducible seed
+  - Status: provisional (needs team OK)
+
+### AI-assisted parts
+- Claude wrote the bots, the match and evaluation scripts and the tests, and found and fixed the corner-trap loss
+- I reviewed the code, ran the tests and the evaluation, and committed
+
+### Open questions for the team
+- Rule bots never kill each other. If the agent later trains against rule bot NPCs it must kill all of them to open the gate, which may be close to impossible. Do we want a more aggressive variant, or a rule bot that takes a random action some percent of the time?
+- Rule bots get few kills against random bots because random bots usually kill themselves first
+- README.md still describes one player and does not mention `agents/`
+
+### Next task for whoever picks this up
+- Track C (Gym wrapper): team call first on observation, rewards and step limit. The NPC controller can use these bots directly: `bot.act(state, npc_id)`
+- Track D can use `agents/evaluate.py` as the fixed evaluation against the random and rule bots
+
+
 
 ## 2026-10-30 Track A game rules (movement, gate, random crates, chains)
 
