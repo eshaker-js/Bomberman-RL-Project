@@ -149,6 +149,38 @@ class TestGameScreen(UITestCase):
         self.frame([key_up(pygame.K_RIGHT)], dt=250)
         self.assertEqual(session.cur["player"], (3, 1))
 
+    def test_animation_frames_draw_at_every_point_of_a_tick(self):
+        from ui.scene import scene
+        from ui.session import GameSession, MODE_BOTS
+        from agents import RuleBot
+        session = GameSession(MODE_BOTS, seed=2, opponents="random")
+        human = RuleBot(2)
+        sprites = self.app.sprites
+        keys = set()
+        facings = {i: "down" for i in range(4)}
+        while not session.over and session.cur["steps"] < 150:
+            session.advance(human.act(session.cur, 0))
+            for t in (0.0, 0.1, 0.2, 0.3, 0.45, 0.55, 0.7, 0.9, 1.0):
+                for item in scene(session.prev, session.cur, t, facings):
+                    keys.add(item.key)
+        for key_ in keys:
+            sprites.get(key_)
+        kinds = {k[0] for k in keys}
+        self.assertTrue({"tile", "bomb", "flame", "debris", "char", "death"} <= kinds, kinds)
+
+    def test_final_tick_animation_finishes_then_game_stops(self):
+        self.start_game([pygame.K_RETURN])
+        screen = self.app.screen
+        self.frame([key(pygame.K_SPACE)], dt=250)
+        while not screen.session.over:
+            self.frame(dt=250)
+        self.assertFalse(screen.finished)
+        self.frame(dt=100)
+        self.assertFalse(screen.finished)
+        self.frame(dt=150)
+        self.assertTrue(screen.finished)
+        self.assertEqual(screen.clock.progress, 1.0)
+
     def test_escape_returns_to_start(self):
         from ui.screens import StartScreen
         self.start_game([pygame.K_RETURN])

@@ -23,7 +23,7 @@ from ui.font import draw_text_centered
 from ui.input import InputBuffer
 from ui.menu import Menu
 from ui.render import draw_box, draw_menu, draw_panel, draw_scene
-from ui.scene import initial_facings, static_scene, update_facings
+from ui.scene import initial_facings, scene, update_facings
 from ui.session import MODE_BOTS, MODE_FREE, GameSession
 
 CONFIRM_KEYS = (pygame.K_RETURN, pygame.K_KP_ENTER)
@@ -119,7 +119,10 @@ class GameScreen(Screen):
 
     The human's action for a tick is whatever ``InputBuffer`` holds when the
     tick is due. The screen never changes the game except through
-    ``session.advance``.
+    ``session.advance``. Between ticks it draws ``scene(prev, cur, t)`` with
+    ``t`` the clock's progress, so each tick's animation ends exactly on the
+    new state. After the final tick it lets that animation finish, then
+    stops (``finished``).
     """
 
     def __init__(self, app, session: GameSession) -> None:
@@ -135,6 +138,7 @@ class GameScreen(Screen):
         self.clock.reset()
         self.input.clear()
         self.facings = initial_facings(self.session.cur)
+        self.finished = False
 
     def handle(self, event) -> None:
         if event.type == pygame.KEYDOWN:
@@ -151,7 +155,13 @@ class GameScreen(Screen):
         if self.ready_ms > 0:
             self.ready_ms -= dt_ms
             return
+        if self.finished:
+            return
         if self.session.over:
+            # The final tick's animation is still playing; stop when it ends.
+            if self.clock.update(dt_ms):
+                self.clock.finish()
+                self.finished = True
             return
         if self.clock.update(dt_ms):
             prev = self.session.cur
@@ -161,7 +171,8 @@ class GameScreen(Screen):
     def draw(self, canvas) -> None:
         canvas.fill(pal.rgb(pal.BLACK))
         state = self.session.cur
-        draw_scene(canvas, self.app.sprites, static_scene(state, self.facings))
+        items = scene(self.session.prev, state, self.clock.progress, self.facings)
+        draw_scene(canvas, self.app.sprites, items)
         draw_panel(canvas, self.app.sprites, self.session, state)
         if self.ready_ms > 0:
             text = "GO!" if self.ready_ms <= GO_MS else "READY..."

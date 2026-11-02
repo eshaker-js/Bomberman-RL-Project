@@ -22,9 +22,11 @@ class Sprites:
     Keys (also used by ``ui.scene``):
     - ``("tile", "floor" | "wall" | "crate")``
     - ``("bomb", frame)``
-    - ``("flame", "steady")``
-    - ``("gate", "closed", 0)`` and ``("gate", "open", frame)``
+    - ``("flame", 0 | 1 | "steady")``
+    - ``("debris", frame)`` for a crate breaking
+    - ``("gate", "closed", 0)``, ``("gate", "open", frame)``, ``("gate", "flash", 0)``
     - ``("char", id, facing, frame)`` with facing down, up, left or right
+    - ``("death", id, frame)``
     - ``("portrait", id, dead)``
     - ``("icon", "bomb", ready)``
     """
@@ -47,11 +49,20 @@ class Sprites:
         if kind == "bomb":
             return surface_from_rows(art.BOMB_FRAMES[key[1]])
         if kind == "flame":
-            return surface_from_rows(art.FLAME_STEADY)
+            frame = key[1]
+            return surface_from_rows(art.FLAME_STEADY if frame == "steady" else art.FLAME_FRAMES[frame])
+        if kind == "debris":
+            return surface_from_rows(art.CRATE_BREAK[key[1]])
         if kind == "gate":
             if key[1] == "closed":
                 return surface_from_rows(art.GATE_CLOSED)
+            if key[1] == "flash":
+                return surface_from_rows(art.GATE_FLASH)
             return surface_from_rows(art.GATE_OPEN_FRAMES[key[2]])
+        if kind == "death":
+            _, character_id, frame = key
+            rows = art.apply_colors(art.DEATH_FRAMES[frame], art.CHARACTER_COLORS[character_id])
+            return surface_from_rows(rows)
         if kind == "char":
             _, character_id, facing, frame = key
             return self._character(art.CHARACTER_COLORS[character_id], facing, frame)

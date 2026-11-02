@@ -5,13 +5,20 @@ A scene is a list of ``Item``s in draw order. ``key`` names a sprite (see
 Everything here is derived from real ``get_state()`` dicts only; the scene
 never decides anything the engine decides.
 
+``static_scene(cur)`` is the state exactly as it is. ``scene(prev, cur, t)``
+animates the tick from ``prev`` to ``cur`` with ``t`` from 0 to 1. Every
+effect ends by ``t = 1``, where ``scene`` equals ``static_scene(cur)``, so
+at the end of every tick the screen matches the state. "Died this tick",
+"crate broke" and "gate changed" are differences between ``prev`` and
+``cur``, never guesses.
+
 Facing is the one thing the engine does not have. It is inferred from
 movement between two states and kept while a character stands still.
 """
 
 from typing import NamedTuple
 
-from game.environment import Cell
+from game.environment import BOMB_FUSE, Cell
 
 from ui.config import TILE
 
@@ -19,11 +26,21 @@ LAYER_TILE = 0
 LAYER_GATE = 1
 LAYER_BOMB = 2
 LAYER_FLAME = 3
-LAYER_CHARACTER = 4
+LAYER_EFFECT = 4  # crate debris and gate blinks, drawn over the flames
+LAYER_CHARACTER = 5
 
 DEFAULT_FACING = "down"
 _FACING_BY_DELTA = {(1, 0): "right", (-1, 0): "left", (0, -1): "up", (0, 1): "down"}
 _TILE_NAMES = {Cell.EMPTY: "floor", Cell.WALL: "wall", Cell.BLOCK: "crate"}
+
+# Animation timing, as fractions of one tick.
+WALK_STRIDE_END = 0.5   # stride frame while t < this, standing frame after
+FLAME_GROW = (0.15, 0.35)  # small burst until the first, medium until the second
+CRATE_BREAK_SPLIT = 0.3  # cracked crate until this, debris until CRATE_BREAK_END
+CRATE_BREAK_END = 0.6
+GATE_BLINK_END = 0.5
+GATE_BLINKS = 4  # on/off blinks per tick while t < GATE_BLINK_END
+DEATH_FRAME_COUNT = 3
 
 
 class Item(NamedTuple):
@@ -32,6 +49,8 @@ class Item(NamedTuple):
     x: int
     y: int
 
+
+# ------------------------------------------------------------------ facing
 
 def initial_facings(state: dict) -> dict[int, str]:
     return {c["id"]: DEFAULT_FACING for c in state["characters"]}
@@ -47,12 +66,79 @@ def update_facings(facings: dict[int, str], prev: dict, cur: dict) -> dict[int, 
     return result
 
 
+# ------------------------------------------------------- animation helpers
+
+def lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def slide(prev_cell: tuple[int, int], cur_cell: tuple[int, int], t: float) -> tuple[int, int]:
+    """Pixel position between two cells, rounded to whole pixels."""
+    return (round(lerp(prev_cell[0] * TILE, cur_cell[0] * TILE, t)),
+            round(lerp(prev_cell[1] * TILE, cur_cell[1] * TILE, t)))
+
+
+def walk_frame(moved: bool, t: float) -> int:
+    """Two-frame walk cycle: stride during the first half of a move, then stand."""
+    return 1 if moved and t < WALK_STRIDE_END else 0
+
+
+def bomb_pulses_per_tick(countdown: int) -> int:
+    """1 pulse per tick at a full fuse, one more each tick it burns down."""
+    return max(1, BOMB_FUSE + 1 - countdown)
+
+
+def bomb_frame(countdown: int, t: float) -> int:
+    """Pulse frame during the second half of each pulse; normal at ``t`` 0 and 1."""
+    phase = (t * bomb_pulses_per_tick(countdown)) % 1.0
+    return 1 if phase >= 0.5 else 0
+
+
+def flame_frame(t: float) -> int | str:
+    if t < FLAME_GROW[0]:
+        return 0
+    if t < FLAME_GROW[1]:
+        return 1
+    return "steady"
+
+
+def death_frame(t: float) -> int:
+    return min(int(t * DEATH_FRAME_COUNT), DEATH_FRAME_COUNT - 1)
+
+
+def broken_crates(prev: dict, cur: dict) -> list[tuple[int, int]]:
+    """Cells that were crates in ``prev`` and are floor in ``cur``."""
+    return [
+        (x, y)
+        for y, (old_row, new_row) in enumerate(zip(prev["grid"], cur["grid"]))
+        for x, (old, new) in enumerate(zip(old_row, new_row))
+        if old is Cell.BLOCK and new is not Cell.BLOCK
+    ]
+
+
+def gate_changed(prev: dict, cur: dict) -> bool:
+    return prev["gate"]["state"] != cur["gate"]["state"]
+
+
+def died_this_tick(prev: dict, cur: dict) -> list[tuple[dict, dict]]:
+    """``(before, after)`` of every character alive in ``prev`` and dead in ``cur``."""
+    return [
+        (before, after)
+        for before, after in zip(prev["characters"], cur["characters"])
+        if not before["dead"] and after["dead"]
+    ]
+
+
 def gate_key(gate_state: str, steps: int) -> tuple | None:
-    """Sprite of the gate, or ``None`` while it is hidden under its crate."""
+    """Sprite of the gate, or ``None`` while it is hidden under its crate.
+
+    The open gate shimmers once per tick, so its frame comes from the tick
+    counter in the state, never from wall-clock time.
+    """
     if gate_state == "hidden":
         return None
     if gate_state == "open":
-        return ("gate", "open", 0)
+        return ("gate", "open", steps % 2)
     return ("gate", "closed", 0)
 
 
@@ -61,16 +147,27 @@ def draw_order(characters: list[dict]) -> list[dict]:
     return sorted(characters, key=lambda c: -c["id"])
 
 
-def static_scene(state: dict, facings: dict[int, str]) -> list[Item]:
-    """The scene exactly as ``state`` is: every object on its cell, nothing in between."""
-    items = []
-    for y, row in enumerate(state["grid"]):
-        for x, cell in enumerate(row):
-            items.append(Item(LAYER_TILE, ("tile", _TILE_NAMES[cell]), x * TILE, y * TILE))
+# ------------------------------------------------------------------ scenes
+
+def _tiles(state: dict) -> list[Item]:
+    return [
+        Item(LAYER_TILE, ("tile", _TILE_NAMES[cell]), x * TILE, y * TILE)
+        for y, row in enumerate(state["grid"])
+        for x, cell in enumerate(row)
+    ]
+
+
+def _gate(state: dict) -> list[Item]:
     gate = state["gate"]
     key = gate_key(gate["state"], state["steps"])
-    if key is not None:
-        items.append(Item(LAYER_GATE, key, gate["x"] * TILE, gate["y"] * TILE))
+    if key is None:
+        return []
+    return [Item(LAYER_GATE, key, gate["x"] * TILE, gate["y"] * TILE)]
+
+
+def static_scene(state: dict, facings: dict[int, str]) -> list[Item]:
+    """The scene exactly as ``state`` is: every object on its cell, nothing in between."""
+    items = _tiles(state) + _gate(state)
     for bomb in state["bombs"]:
         items.append(Item(LAYER_BOMB, ("bomb", 0), bomb["x"] * TILE, bomb["y"] * TILE))
     for x, y in sorted(state["explosion"]):
@@ -80,4 +177,49 @@ def static_scene(state: dict, facings: dict[int, str]) -> list[Item]:
             facing = facings.get(c["id"], DEFAULT_FACING)
             items.append(Item(LAYER_CHARACTER, ("char", c["id"], facing, 0),
                               c["x"] * TILE, c["y"] * TILE))
+    return items
+
+
+def scene(prev: dict, cur: dict, t: float, facings: dict[int, str]) -> list[Item]:
+    """The tick from ``prev`` to ``cur`` at ``t`` in [0, 1]. ``facings`` are after the tick.
+
+    Bombs, flames, crates and the gate are those of ``cur`` from the start of
+    the tick (they are the result of the tick); only characters move between
+    the two states. Short effects (crate debris, gate blink, death) end
+    within the tick.
+    """
+    t = min(max(t, 0.0), 1.0)
+    items = _tiles(cur) + _gate(cur)
+
+    for bomb in cur["bombs"]:
+        items.append(Item(LAYER_BOMB, ("bomb", bomb_frame(bomb["countdown"], t)),
+                          bomb["x"] * TILE, bomb["y"] * TILE))
+
+    flame = flame_frame(t)
+    for x, y in sorted(cur["explosion"]):
+        items.append(Item(LAYER_FLAME, ("flame", flame), x * TILE, y * TILE))
+
+    if t < CRATE_BREAK_END:
+        frame = 0 if t < CRATE_BREAK_SPLIT else 1
+        for x, y in broken_crates(prev, cur):
+            items.append(Item(LAYER_EFFECT, ("debris", frame), x * TILE, y * TILE))
+    if (gate_changed(prev, cur) and t < GATE_BLINK_END
+            and int(t / GATE_BLINK_END * GATE_BLINKS) % 2 == 0):
+        gate = cur["gate"]
+        items.append(Item(LAYER_EFFECT, ("gate", "flash", 0), gate["x"] * TILE, gate["y"] * TILE))
+
+    before_by_id = {c["id"]: c for c in prev["characters"]}
+    for c in draw_order(cur["characters"]):
+        before = before_by_id[c["id"]]
+        if before["dead"]:
+            continue
+        old_cell, new_cell = (before["x"], before["y"]), (c["x"], c["y"])
+        x, y = slide(old_cell, new_cell, t)
+        if c["dead"]:
+            if t < 1.0:
+                items.append(Item(LAYER_CHARACTER, ("death", c["id"], death_frame(t)), x, y))
+            continue
+        facing = facings.get(c["id"], DEFAULT_FACING)
+        frame = walk_frame(old_cell != new_cell, t)
+        items.append(Item(LAYER_CHARACTER, ("char", c["id"], facing, frame), x, y))
     return items
