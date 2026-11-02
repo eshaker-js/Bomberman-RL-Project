@@ -106,7 +106,7 @@ class TestGameScreen(UITestCase):
 
     def test_player_vs_bots_runs_and_draws(self):
         from ui.session import MODE_BOTS
-        self.start_game([pygame.K_DOWN, pygame.K_RETURN])
+        self.start_game([pygame.K_DOWN, pygame.K_RETURN, pygame.K_RETURN])
         screen = self.app.screen
         self.assertEqual(screen.session.mode, MODE_BOTS)
         for _ in range(40):
@@ -181,11 +181,6 @@ class TestGameScreen(UITestCase):
         self.assertTrue(screen.finished)
         self.assertEqual(screen.clock.progress, 1.0)
 
-    def test_escape_returns_to_start(self):
-        from ui.screens import StartScreen
-        self.start_game([pygame.K_RETURN])
-        self.frame([key(pygame.K_ESCAPE)])
-        self.assertIsInstance(self.app.screen, StartScreen)
 
     def test_game_stops_at_outcome_and_shows_it(self):
         self.start_game([pygame.K_RETURN])
@@ -205,7 +200,7 @@ class TestGameScreen(UITestCase):
         for _ in range(3):
             self.frame([key(pygame.K_RETURN)])
             seeds.append(self.app.screen.session.seed)
-            self.frame([key(pygame.K_ESCAPE)])
+            self.frame([key(pygame.K_ESCAPE), key(pygame.K_UP), key(pygame.K_RETURN)])
         self.assertEqual(len(set(seeds)), 3)
         self.assertTrue(all(0 <= s < SEED_COUNT for s in seeds))
 

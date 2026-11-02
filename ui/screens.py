@@ -22,7 +22,15 @@ from ui.config import (
 from ui.font import draw_text_centered
 from ui.input import InputBuffer
 from ui.menu import Menu
-from ui.render import draw_box, draw_menu, draw_panel, draw_scene
+from ui.render import (
+    OUTCOME_COLOR,
+    OUTCOME_TEXT,
+    draw_box,
+    draw_dialog,
+    draw_menu,
+    draw_panel,
+    draw_scene,
+)
 from ui.scene import initial_facings, scene, update_facings
 from ui.session import MODE_BOTS, MODE_FREE, GameSession
 
@@ -31,6 +39,17 @@ CONFIRM_KEYS = (pygame.K_RETURN, pygame.K_KP_ENTER)
 START_FREE = "FREE WORLD"
 START_BOTS = "PLAYER VS BOTS"
 START_SPECTATOR = "AGENT SPECTATOR"
+
+# Opponent choice for Player vs Bots: menu label -> (session opponents, description).
+OPPONENT_CHOICES = {
+    "RANDOM": ("random", "3 RANDOM BOTS"),
+    "RULE": ("rule", "3 RULE BOTS"),
+    "MIXED": ("mixed", "2 RULE + 1 RANDOM (SEAT 3)"),
+}
+
+PAUSE_RESUME = "RESUME"
+PAUSE_RESTART = "RESTART"
+PAUSE_MENU = "MENU"
 
 
 def menu_key(menu: Menu, key: int) -> bool:
@@ -75,9 +94,7 @@ class StartScreen(Screen):
         if option == START_FREE:
             self.app.switch(GameScreen(self.app, GameSession(MODE_FREE, self.app.new_seed())))
         elif option == START_BOTS:
-            # Rule bots until the opponent screen exists.
-            session = GameSession(MODE_BOTS, self.app.new_seed(), "rule")
-            self.app.switch(GameScreen(self.app, session))
+            self.app.switch(OpponentScreen(self.app))
         else:
             self.app.switch(NotReadyScreen(self.app))
 
@@ -114,6 +131,34 @@ class NotReadyScreen(Screen):
         draw_menu(canvas, self.menu, cx, 130)
 
 
+class OpponentScreen(Screen):
+    """Choose the three bots for Player vs Bots. Esc goes back."""
+
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        self.menu = Menu(list(OPPONENT_CHOICES))
+
+    def handle(self, event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key == pygame.K_ESCAPE:
+            self.app.switch(StartScreen(self.app))
+        elif menu_key(self.menu, event.key):
+            opponents, _ = OPPONENT_CHOICES[self.menu.selected]
+            session = GameSession(MODE_BOTS, self.app.new_seed(), opponents)
+            self.app.switch(GameScreen(self.app, session))
+
+    def draw(self, canvas) -> None:
+        canvas.fill(pal.rgb(pal.BLACK))
+        cx = CANVAS_W // 2
+        draw_text_centered(canvas, START_BOTS, cx, 28, pal.YELLOW, scale=2)
+        draw_text_centered(canvas, "CHOOSE OPPONENTS", cx, 52, pal.LIGHT_GREY)
+        draw_menu(canvas, self.menu, cx, 80, spacing=14)
+        _, description = OPPONENT_CHOICES[self.menu.selected]
+        draw_text_centered(canvas, description, cx, 132, pal.WHITE)
+        draw_text_centered(canvas, "ARROWS + ENTER    ESC BACK", cx, CANVAS_H - 16, pal.DARK_GREY)
+
+
 class GameScreen(Screen):
     """One running game: READY/GO, then one tick every ``TICK_MS``.
 
@@ -122,7 +167,10 @@ class GameScreen(Screen):
     ``session.advance``. Between ticks it draws ``scene(prev, cur, t)`` with
     ``t`` the clock's progress, so each tick's animation ends exactly on the
     new state. After the final tick it lets that animation finish, then
-    stops (``finished``).
+    stops (``finished``) and shows the result dialog.
+
+    Esc pauses (clock and countdown frozen) with resume, restart (same seed)
+    and back to the menu. On the result dialog Esc goes back to the menu.
     """
 
     def __init__(self, app, session: GameSession) -> None:
@@ -139,11 +187,29 @@ class GameScreen(Screen):
         self.input.clear()
         self.facings = initial_facings(self.session.cur)
         self.finished = False
+        self.pause_menu: Menu | None = None
+        self.result_menu = Menu([PAUSE_RESTART, PAUSE_MENU])
+
+    @property
+    def paused(self) -> bool:
+        return self.pause_menu is not None
+
+    def restart(self) -> None:
+        """Same seed, same crates, same bot seeds: the game from the start."""
+        self.session.restart()
+        self.start()
+
+    def back_to_menu(self) -> None:
+        self.app.switch(StartScreen(self.app))
 
     def handle(self, event) -> None:
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                self.app.switch(StartScreen(self.app))
+            if self.finished:
+                self._handle_result_key(event.key)
+            elif self.paused:
+                self._handle_pause_key(event.key)
+            elif event.key == pygame.K_ESCAPE:
+                self.pause_menu = Menu([PAUSE_RESUME, PAUSE_RESTART, PAUSE_MENU])
             else:
                 self.input.key_down(event.key)
         elif event.type == pygame.KEYUP:
@@ -151,7 +217,29 @@ class GameScreen(Screen):
         elif event.type == pygame.WINDOWFOCUSLOST:
             self.input.release_all()
 
+    def _handle_pause_key(self, key: int) -> None:
+        if key == pygame.K_ESCAPE:
+            self.pause_menu = None
+        elif menu_key(self.pause_menu, key):
+            choice = self.pause_menu.selected
+            self.pause_menu = None
+            if choice == PAUSE_RESTART:
+                self.restart()
+            elif choice == PAUSE_MENU:
+                self.back_to_menu()
+
+    def _handle_result_key(self, key: int) -> None:
+        if key == pygame.K_ESCAPE:
+            self.back_to_menu()
+        elif menu_key(self.result_menu, key):
+            if self.result_menu.selected == PAUSE_RESTART:
+                self.restart()
+            else:
+                self.back_to_menu()
+
     def update(self, dt_ms: float) -> None:
+        if self.paused:
+            return
         if self.ready_ms > 0:
             self.ready_ms -= dt_ms
             return
@@ -174,7 +262,14 @@ class GameScreen(Screen):
         items = scene(self.session.prev, state, self.clock.progress, self.facings)
         draw_scene(canvas, self.app.sprites, items)
         draw_panel(canvas, self.app.sprites, self.session, state)
-        if self.ready_ms > 0:
+        if self.ready_ms > 0 and not self.paused:
             text = "GO!" if self.ready_ms <= GO_MS else "READY..."
             color = pal.GREEN if self.ready_ms <= GO_MS else pal.YELLOW
             draw_box(canvas, [(text, color, 2)], ARENA_X + ARENA_W // 2, ARENA_Y + ARENA_H // 2)
+        center = (ARENA_X + ARENA_W // 2, ARENA_Y + ARENA_H // 2)
+        if self.paused:
+            draw_dialog(canvas, "PAUSED", pal.WHITE, self.pause_menu, *center)
+        elif self.finished:
+            outcome = state["outcome"]
+            draw_dialog(canvas, OUTCOME_TEXT[outcome], OUTCOME_COLOR[outcome],
+                        self.result_menu, *center)

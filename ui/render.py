@@ -64,6 +64,7 @@ def draw_panel(canvas, sprites: Sprites, session, state: dict) -> None:
     draw_text(canvas, f"TICK {state['steps']}", x, INFO_Y, pal.WHITE)
     draw_text(canvas, f"GATE {state['gate']['state']}", x, INFO_Y + 8,
               pal.GREEN if state["gate"]["state"] == "open" else pal.LIGHT_GREY)
+    draw_text(canvas, f"SEED {session.seed}", x, INFO_Y + 16, pal.DARK_GREY)
 
     outcome = state["outcome"]
     if outcome is not None:
@@ -104,6 +105,18 @@ def draw_box(canvas, lines: list[tuple[str, int, int]], cx: int, cy: int) -> Non
     for text, color, scale in lines:
         draw_text_centered(canvas, text, cx, y, color, scale)
         y += 5 * scale + 4
+
+
+def draw_dialog(canvas, title: str, color: int, menu: Menu, cx: int, cy: int) -> None:
+    """A centred box with a big ``title`` and a menu under it."""
+    spacing = 10
+    width = max(text_width(title, 2),
+                *(text_width(f"> {option} <") for option in menu.options)) + 16
+    height = 7 + 10 + 8 + len(menu.options) * spacing + 4
+    top = cy - height // 2
+    frame_rect(canvas, (cx - width // 2, top, width, height), pal.BLACK, pal.WHITE)
+    draw_text_centered(canvas, title, cx, top + 7, color, scale=2)
+    draw_menu(canvas, menu, cx, top + 7 + 10 + 8, spacing)
 
 
 def draw_menu(canvas, menu: Menu, cx: int, y: int, spacing: int = 10) -> None:
