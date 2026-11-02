@@ -16,12 +16,24 @@ import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 
 # Rules a later assignment can tune without hunting through the logic.
 MAP_WIDTH = 11
 MAP_HEIGHT = 11
 BOMB_FUSE = 4
 BLAST_RANGE = 2
+# Default number of ticks a burned cell keeps burning, counting the tick of
+# the explosion. 1 is the original rule: flames last for one tick only.
+FLAME_TICKS = 1
+
+# Timing of the real game, measured from the reference game at 250 ms per
+# tick: a 2.25 s fuse (9 ticks) and flames that stay deadly for 1 s (4 ticks).
+# Everything that runs the real game (the UI, later the Gym wrapper) creates
+# its env with ``BombermanEnv(**GAME_RULES)``. The engine defaults stay at
+# BOMB_FUSE and FLAME_TICKS so the original rules remain testable.
+# Provisional until the whole team confirms.
+GAME_RULES = MappingProxyType({"bomb_fuse": 9, "flame_ticks": 4})
 
 
 class Cell(Enum):
@@ -190,7 +202,7 @@ class BombermanEnv:
     continues it, as in Gymnasium. ``step`` lets every living
     character act in ID order (agent first, then NPCs 1, 2, 3), then counts
     down the bombs that were already on the board. A bomb placed on this
-    action keeps the full fuse, so its owner has ``BOMB_FUSE`` later actions
+    action keeps the full fuse, so its owner has ``bomb_fuse`` later actions
     before it explodes. Moves on the exploding action are applied first.
 
     Each character has at most one bomb and each cell holds at most one.
@@ -205,9 +217,25 @@ class BombermanEnv:
     Once there is an outcome (or the agent is dead), further ``step`` calls
     leave the state unchanged until ``reset``.
 
-    Flames are remembered in ``explosion`` so a renderer can show them until
-    the next action. They are not checked again and do not pass time on
-    their own.
+    Burned cells keep burning for ``flame_ticks`` ticks, counting the tick
+    of the explosion; ``flames`` maps each burning cell to its remaining
+    ticks (counting the tick just resolved, never 0) and the owners of the
+    blast that last burned it. Order inside ``step``:
+
+    1. flames from earlier ticks age by one tick; those at 0 go out
+    2. every living character acts in ID order (flames never block)
+    3. bombs count down and due bombs explode, with chain reactions; every
+       freshly burned cell (re)starts burning with the fresh blast's owners
+    4. every living character on a burning cell dies, fresh or lingering
+    5. the gate opens if it is revealed and every NPC is dead
+    6. the outcome is decided
+
+    Lingering flames never stop or start blast rays and never set off bombs;
+    only fresh blasts do. With ``flame_ticks=1`` step 1 puts out every older
+    flame, so only this tick's blast cells burn: exactly the original rules.
+    ``explosion`` keeps listing only the cells burned on the latest action.
+
+    ``bomb_fuse`` and ``flame_ticks`` must be integers of at least 1.
 
     Public attributes:
     - ``grid``: cells indexed as ``grid[y][x]``
@@ -217,21 +245,36 @@ class BombermanEnv:
     - ``dead``: whether an explosion has hit the agent
     - ``bomb``: the agent's active ``Bomb``, or ``None``
     - ``explosion``: cells burned by any bomb on the latest action, or an empty list
+    - ``flames``: burning cell -> ``(ticks_left, owners)``, see above
+    - ``bomb_fuse``, ``flame_ticks``: this env's timing settings
     - ``events``: events of the latest action, see ``_explode`` for their order
     - ``steps``: actions resolved since the last reset
     - ``gate``: the ``Gate`` at ``GATE_POSITION``
     - ``outcome``: ``None``, ``"win"``, ``"loss"``, or ``"draw"``
     """
 
-    def __init__(self, *, with_npcs: bool = False, random_crates: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        with_npcs: bool = False,
+        random_crates: bool = False,
+        bomb_fuse: int = BOMB_FUSE,
+        flame_ticks: int = FLAME_TICKS,
+    ) -> None:
+        for name, value in (("bomb_fuse", bomb_fuse), ("flame_ticks", flame_ticks)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be an integer of at least 1, not {value!r}")
         self.with_npcs = with_npcs
         self.random_crates = random_crates
+        self.bomb_fuse = bomb_fuse
+        self.flame_ticks = flame_ticks
         # Unseeded until the first reset(seed=...), like a Gymnasium env.
         self._rng = random.Random()
         self.grid: list[list[Cell]] = []
         self.characters: list[Character] = []
         self.bombs: dict[int, Bomb] = {}
         self.explosion: list[tuple[int, int]] = []
+        self.flames: dict[tuple[int, int], tuple[int, tuple[int, ...]]] = {}
         self.events: list[dict] = []
         self.steps = 0
         self.gate = Gate(*GATE_POSITION, "hidden")
@@ -304,6 +347,7 @@ class BombermanEnv:
             ]
         self.bombs = {}
         self.explosion = []
+        self.flames = {}
         self.events = []
         self.steps = 0
         self.gate = Gate(*GATE_POSITION, "hidden")
@@ -351,6 +395,15 @@ class BombermanEnv:
             "all_npcs_dead": self.all_npcs_dead,
             "gate": {"x": self.gate.x, "y": self.gate.y, "state": self.gate.state},
             "outcome": self.outcome,
+            "flames": [
+                {"x": x, "y": y, "ticks_left": ticks_left, "owners": owners}
+                for (x, y), (ticks_left, owners) in sorted(self.flames.items())
+            ],
+            "rules": {
+                "bomb_fuse": self.bomb_fuse,
+                "blast_range": BLAST_RANGE,
+                "flame_ticks": self.flame_ticks,
+            },
         }
 
     def step(
@@ -382,6 +435,7 @@ class BombermanEnv:
         self.events = []
         self.steps += 1
         npcs_alive_before = self._npcs_alive()
+        self._age_flames()
         # Bombs placed during this action start blocking on the next one.
         blocking = {(bomb.x, bomb.y) for bomb in self.bombs.values()}
         placed: set[int] = set()
@@ -399,8 +453,44 @@ class BombermanEnv:
         due = self._tick_bombs(placed)
         if due:
             self._explode(due)
+        self._burn_characters()
+        self._maybe_open_gate()
         self._decide_outcome(npcs_alive_before)
         return self.get_state()
+
+    def _age_flames(self) -> None:
+        """Flames from earlier ticks burn one tick less; those at 0 go out."""
+        self.flames = {
+            cell: (ticks_left - 1, owners)
+            for cell, (ticks_left, owners) in self.flames.items()
+            if ticks_left > 1
+        }
+
+    def _burn_characters(self) -> None:
+        """Every living character on a burning cell dies, in ID order.
+
+        Runs after all moves, explosions and chain reactions of the action,
+        for fresh and lingering flames alike. ``killed_by`` names the owners
+        of the blast that last burned the cell.
+        """
+        for character in self.characters:
+            position = (character.x, character.y)
+            if not character.dead and position in self.flames:
+                character.dead = True
+                self.events.append(
+                    {
+                        "type": "death",
+                        "character": character.id,
+                        "killed_by": self.flames[position][1],
+                    }
+                )
+
+    def _maybe_open_gate(self) -> None:
+        """Open a revealed gate once every NPC is dead. Checked every action."""
+        # Single-player has no NPCs to defeat, so its gate never opens.
+        if self.gate.state == "closed" and self.all_npcs_dead:
+            self.gate = Gate(self.gate.x, self.gate.y, "open")
+            self.events.append({"type": "gate_opened"})
 
     def _npcs_alive(self) -> bool:
         return any(not npc.dead for npc in self.characters[1:])
@@ -457,7 +547,7 @@ class BombermanEnv:
             here = (character.x, character.y)
             if any((bomb.x, bomb.y) == here for bomb in self.bombs.values()):
                 return False
-            self.bombs[character.id] = Bomb(character.x, character.y, BOMB_FUSE)
+            self.bombs[character.id] = Bomb(character.x, character.y, self.bomb_fuse)
             return True
 
         dx, dy = _MOVE[action]
@@ -522,9 +612,11 @@ class BombermanEnv:
         began still ends rays, even after it exploded in an earlier wave.
         A burned cell is credited to the owner of every bomb that burned it.
 
-        Then the gate is revealed if its crate burned, every living character
-        on a burned cell dies, and the gate opens if it is revealed and every
-        NPC is dead.
+        Then the gate is revealed if its crate burned, and every burned cell
+        starts (or restarts) burning for ``flame_ticks`` ticks with the owners
+        whose blasts reached it. Deaths and the gate opening follow in
+        ``step`` (``_burn_characters`` then ``_maybe_open_gate``), so
+        lingering flames kill and open the gate the same way.
 
         Events of one action, in this order:
         1. ``bomb_triggered`` by wave, then owner, naming the owners whose
@@ -532,8 +624,9 @@ class BombermanEnv:
         2. ``block_destroyed`` in first-burn order, naming every owner whose
            blast reached the block
         3. ``gate_revealed`` when the gate's crate was destroyed
-        4. ``death`` in ID order, naming every owner whose blast reached the cell
-        5. ``gate_opened`` when the gate became open
+        4. ``death`` in ID order (added by ``_burn_characters``), naming the
+           owners of the blast that last burned the cell
+        5. ``gate_opened`` when the gate became open (``_maybe_open_gate``)
         """
         # One bomb per cell, so each bomb cell names exactly one owner.
         bomb_cells = {(bomb.x, bomb.y): owner for owner, bomb in self.bombs.items()}
@@ -576,25 +669,10 @@ class BombermanEnv:
         for owner in exploded:
             del self.bombs[owner]
         self.explosion = list(burned)
+        for cell, by in burned.items():
+            self.flames[cell] = (self.flame_ticks, tuple(sorted(by)))
 
         gate_x, gate_y = GATE_POSITION
         if self.gate.state == "hidden" and self.grid[gate_y][gate_x] is Cell.EMPTY:
             self.gate = Gate(gate_x, gate_y, "closed")
             self.events.append({"type": "gate_revealed"})
-
-        for character in self.characters:
-            position = (character.x, character.y)
-            if not character.dead and position in burned:
-                character.dead = True
-                self.events.append(
-                    {
-                        "type": "death",
-                        "character": character.id,
-                        "killed_by": tuple(sorted(burned[position])),
-                    }
-                )
-
-        # Single-player has no NPCs to defeat, so its gate never opens.
-        if self.gate.state == "closed" and self.all_npcs_dead:
-            self.gate = Gate(gate_x, gate_y, "open")
-            self.events.append({"type": "gate_opened"})
