@@ -1,0 +1,453 @@
+"""All pixel art as text grids. Pure data: no pygame.
+
+Each sprite is a tuple of equal-length strings, one string per pixel row.
+A character is one PICO-8 palette index as a hex digit (``0``-``f``, see
+``ui.palette``), ``.`` is transparent, and the placeholders ``P`` (main
+colour) and ``Q`` (shade) are replaced per character by
+``CHARACTER_COLORS``. Map tiles and character frames are ``TILE`` x
+``TILE`` (16 x 16) pixels.
+
+All designs are original to this project.
+"""
+
+from ui.config import TILE
+
+TRANSPARENT = "."
+PLACEHOLDERS = "PQ"
+_HEX = "0123456789abcdef"
+
+# Main and shade colour of each character: 0 blue (the human or agent),
+# 1 red, 2 green, 3 orange.
+CHARACTER_COLORS = {
+    0: {"P": "c", "Q": "1"},
+    1: {"P": "8", "Q": "2"},
+    2: {"P": "b", "Q": "3"},
+    3: {"P": "9", "Q": "4"},
+}
+# Portrait colours on the card of a dead character.
+DEAD_COLORS = {"P": "5", "Q": "0"}
+
+
+def apply_colors(rows: tuple[str, ...], mapping: dict[str, str]) -> tuple[str, ...]:
+    """Return ``rows`` with every character in ``mapping`` replaced."""
+    return tuple("".join(mapping.get(ch, ch) for ch in row) for row in rows)
+
+
+def validate(name: str, rows: tuple[str, ...], size: tuple[int, int] | None = None,
+             allow_placeholders: bool = False) -> None:
+    """Raise ``ValueError`` if ``rows`` is not a well-formed sprite grid."""
+    if not rows or len({len(row) for row in rows}) != 1:
+        raise ValueError(f"sprite {name!r}: rows must all have the same length")
+    if size is not None and (len(rows[0]), len(rows)) != size:
+        raise ValueError(f"sprite {name!r}: expected {size}, got {(len(rows[0]), len(rows))}")
+    allowed = set(_HEX + TRANSPARENT + (PLACEHOLDERS if allow_placeholders else ""))
+    for row in rows:
+        bad = set(row) - allowed
+        if bad:
+            raise ValueError(f"sprite {name!r}: unknown characters {sorted(bad)}")
+
+
+# ---------------------------------------------------------------- map tiles
+
+FLOOR = (
+    "3333333333333333",
+    "3333333333333333",
+    "33b3333333333333",
+    "3333333333333b33",
+    "3333333333333333",
+    "333333b333333333",
+    "3333333333333333",
+    "3333333333333333",
+    "33333333333b3333",
+    "3b33333333333333",
+    "3333333333333333",
+    "3333333b33333333",
+    "3333333333333333",
+    "333333333333333b",
+    "3333b33333333333",
+    "3333333333333333",
+)
+
+WALL = (
+    "7777777777777776",
+    "7666666666666665",
+    "7666666666666665",
+    "7666566666666665",
+    "7666666666666665",
+    "7666666666656665",
+    "7666666666666665",
+    "7666666666666665",
+    "7666666666666665",
+    "7665666666666665",
+    "7666666666666665",
+    "7666666666666565",
+    "7666666666666665",
+    "7666666666666665",
+    "7655555555555555",
+    "6555555555555550",
+)
+
+CRATE = (
+    "2222222222222222",
+    "2999999999999942",
+    "2944444444444442",
+    "2949444444449442",
+    "2944944444494442",
+    "2944494444944442",
+    "2944449449444442",
+    "2944444994444442",
+    "2944444994444442",
+    "2944449449444442",
+    "2944494444944442",
+    "2944944444494442",
+    "2949444444449442",
+    "2944444444444442",
+    "2444444444444442",
+    "2222222222222222",
+)
+
+# --------------------------------------------------------------------- bomb
+
+BOMB = (
+    "................",
+    "...........a....",
+    "..........9a9...",
+    "..........4.....",
+    ".........4......",
+    ".....000000.....",
+    "...0011111100...",
+    "..011776111110..",
+    "..017611111110..",
+    ".01161111111110.",
+    ".01111111111110.",
+    ".01111111111110.",
+    "..011111111110..",
+    "..011111111110..",
+    "...0011111100...",
+    ".....000000.....",
+)
+# Pulse frame: the body glows red. Bombs pulse faster as their countdown drops.
+BOMB_PULSE = apply_colors(BOMB, {"1": "2", "6": "8", "7": "e", "a": "7"})
+BOMB_FRAMES = (BOMB, BOMB_PULSE)
+
+# ------------------------------------------------------------------- flames
+# One colour scheme for every blast. The last frame is the steady flame that
+# stays on a burned cell until the next tick.
+
+FLAME_STEADY = (
+    "..8.88888888.8..",
+    ".88899999999888.",
+    "8899aaaaaaaa9988",
+    "899aaaaaaaaaa998",
+    "89aaa777777aaa98",
+    "89aa77777777aa98",
+    "89aa77777777aa98",
+    "89aa77777777aa98",
+    "89aa77777777aa98",
+    "89aa77777777aa98",
+    "89aa77777777aa98",
+    "89aaa777777aaa98",
+    "899aaaaaaaaaa998",
+    "8899aaaaaaaa9988",
+    ".88899999999888.",
+    "..8.88888888.8..",
+)
+FLAME_SMALL = (
+    "................",
+    "................",
+    "................",
+    "......8888......",
+    ".....899998.....",
+    "....89aaaa98....",
+    "...89aa77aa98...",
+    "...89a7777a98...",
+    "...89a7777a98...",
+    "...89aa77aa98...",
+    "....89aaaa98....",
+    ".....899998.....",
+    "......8888......",
+    "................",
+    "................",
+    "................",
+)
+
+FLAME_MEDIUM = (
+    "................",
+    "................",
+    "....88888888....",
+    "...8899999988...",
+    "..899aaaaaa998..",
+    "..89aa7777aa98..",
+    "..89a777777a98..",
+    "..89a777777a98..",
+    "..89a777777a98..",
+    "..89a777777a98..",
+    "..89aa7777aa98..",
+    "..899aaaaaa998..",
+    "...8899999988...",
+    "....88888888....",
+    "................",
+    "................",
+)
+# Growing burst, then the steady flame.
+FLAME_FRAMES = (FLAME_SMALL, FLAME_MEDIUM, FLAME_STEADY)
+
+# ----------------------------------------------------------- breaking crate
+# Drawn over the floor (and over the flames) on the tick a crate is destroyed.
+
+CRATE_BREAK = (
+    (
+        "2222222..2222222",
+        "29999994.9999942",
+        "2944444..4444442",
+        "2949444.44449442",
+        "294494.44449442.",
+        "2944494..94444.2",
+        "294444.949444.2.",
+        "..44444994444...",
+        "..444449944442..",
+        "2944449.4944442.",
+        "29444944.494442.",
+        "2944944..4494442",
+        "2949444.44449442",
+        "294444.444444442",
+        "244444..44444442",
+        "222222..22222222",
+    ),
+    (
+        "................",
+        ".29.........942.",
+        "..94......494...",
+        "...4..........2.",
+        "................",
+        "......2.........",
+        ".24.......94....",
+        "..9.............",
+        "..........4.2...",
+        "....42..........",
+        "...2.........94.",
+        "................",
+        ".9.....24.......",
+        "..4.........2...",
+        "................",
+        "................",
+    ),
+)
+
+# --------------------------------------------------------------------- gate
+# A hatch in the floor: barred while closed, a glowing portal once open.
+# A hidden gate is not drawn at all: its crate is still on the grid.
+
+GATE_CLOSED = (
+    "0555555555555550",
+    "5666666666666665",
+    "5655555555555565",
+    "565d00d00d00d565",
+    "565d00d00d00d565",
+    "565d00d00d00d565",
+    "565d00d00d00d565",
+    "565dddddddddd565",
+    "565d00d00d00d565",
+    "565d00d00d00d565",
+    "565d00d00d00d565",
+    "565d00d00d00d565",
+    "5655555555555565",
+    "5666666666666665",
+    "5555555555555555",
+    "0555555555555550",
+)
+
+_GATE_OPEN_BASE = (
+    "0333333333333330",
+    "3bbbbbbbbbbbbbb3",
+    "3b333333333333b3",
+    "3b311111111113b3",
+    "3b3111cccc1113b3",
+    "3b311cc77cc113b3",
+    "3b31cc7777cc13b3",
+    "3b31c777777c13b3",
+    "3b31c777777c13b3",
+    "3b31cc7777cc13b3",
+    "3b311cc77cc113b3",
+    "3b3111cccc1113b3",
+    "3b311111111113b3",
+    "3b333333333333b3",
+    "3bbbbbbbbbbbbbb3",
+    "0333333333333330",
+)
+# The open portal shimmers: one frame per tick, alternating.
+GATE_OPEN_FRAMES = (
+    _GATE_OPEN_BASE,
+    apply_colors(_GATE_OPEN_BASE, {"1": "c", "c": "7", "7": "1"}),
+)
+# White blink drawn over the gate on the tick it is revealed or opens.
+GATE_FLASH = apply_colors(
+    GATE_CLOSED, {ch: "7" for ch in "123456789abcdef"}
+)
+
+# --------------------------------------------------------------- characters
+# One original design for all four: a round hooded figure with a dark visor.
+# Facings are "down", "up" and "right"; "left" is drawn as "right" mirrored.
+
+_CHAR_DOWN = (
+    "................",
+    "......0000......",
+    "....00PPPP00....",
+    "...0PPPPPPPP0...",
+    "..0PPPPPPPPPP0..",
+    "..0PP000000PP0..",
+    "..0P07700770P0..",
+    "..0P00000000P0..",
+    "..0QP000000PQ0..",
+    "...0QQPPPPQQ0...",
+    "..0PPQQQQQQPP0..",
+    ".0f0PPPaaPPP0f0.",
+    "..00PPPPPPPP00..",
+    "...0QPPPPPPQ0...",
+    "....0QQ00QQ0....",
+    "....000..000....",
+)
+
+_CHAR_UP = (
+    "................",
+    "......0000......",
+    "....00PPPP00....",
+    "...0PPPPPPPP0...",
+    "..0PPPPPPPPPP0..",
+    "..0PPPPPPPPPP0..",
+    "..0PPPPQQPPPP0..",
+    "..0PPPQQQQPPP0..",
+    "..0QPPPQQPPPQ0..",
+    "...0QQPPPPQQ0...",
+    "..0PPQQQQQQPP0..",
+    ".0f0PPPPPPPP0f0.",
+    "..00PPPPPPPP00..",
+    "...0QPPPPPPQ0...",
+    "....0QQ00QQ0....",
+    "....000..000....",
+)
+
+_CHAR_RIGHT = (
+    "................",
+    ".....00000......",
+    "...00PPPPP00....",
+    "..0PPPPPPPPP0...",
+    ".0PPPPPPPPPPP0..",
+    ".0PPPPP000000P0.",
+    ".0QPPP0000770P0.",
+    ".0QPPP0000000P0.",
+    ".0QQPPP000000Q0.",
+    "..0QQQPPPPPPQ0..",
+    "..0PPQQQQQQPP0..",
+    "...0PPPPPPf0....",
+    "...0PPPaaPP0....",
+    "...0QPPPPPQ0....",
+    "....0QQ0QQ0.....",
+    "....000.000.....",
+)
+
+FACINGS = ("down", "up", "left", "right")
+
+
+def _with_rows(rows: tuple[str, ...], replacements: dict[int, str]) -> tuple[str, ...]:
+    """``rows`` with some rows replaced, for walk frames that only move the feet."""
+    return tuple(replacements.get(i, row) for i, row in enumerate(rows))
+
+
+_STRIDE = {14: "...0QQ0..0QQ0...", 15: "...000....000..."}
+
+# (facing, walk frame) -> grid. Frame 0 is the standing pose, frame 1 the stride.
+CHAR_FRAMES = {
+    ("down", 0): _CHAR_DOWN,
+    ("down", 1): _with_rows(_CHAR_DOWN, _STRIDE),
+    ("up", 0): _CHAR_UP,
+    ("up", 1): _with_rows(_CHAR_UP, _STRIDE),
+    ("right", 0): _CHAR_RIGHT,
+    ("right", 1): _with_rows(_CHAR_RIGHT, _STRIDE),
+}
+
+# Death, all within one tick: a white flash of the body, a puff in the
+# character's colour, then fading sparks. After the tick the character is gone.
+DEATH_FRAMES = (
+    apply_colors(_CHAR_DOWN, {ch: "7" for ch in "0123456789abcdefPQ"}),
+    (
+        "................",
+        "................",
+        "................",
+        "................",
+        ".....7....7.....",
+        "...7..6PP6..7...",
+        "....66P77P66....",
+        "..7.6P7777P6.7..",
+        "...6P777777P6...",
+        "...6P777777P6...",
+        "..7.6P7777P6.7..",
+        "....66P77P66....",
+        "...7..6PP6..7...",
+        ".....7....7.....",
+        "................",
+        "................",
+    ),
+    (
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        ".....7....7.....",
+        "................",
+        "...7...PP...7...",
+        ".......PP.......",
+        "...7........7...",
+        "................",
+        ".....7....7.....",
+        "................",
+        "................",
+        "................",
+        "................",
+    ),
+)
+
+# ------------------------------------------------------------- panel icons
+
+ICON_BOMB = (
+    "....a..",
+    "...4...",
+    "..000..",
+    ".01100.",
+    ".01000.",
+    ".00000.",
+    "..000..",
+)
+# The same icon, dimmed, for a character whose bomb is on the board.
+ICON_BOMB_ARMED = apply_colors(ICON_BOMB, {"a": "5", "4": "5", "1": "5", "0": "5"})
+
+TILE_SPRITES = {
+    "floor": FLOOR,
+    "wall": WALL,
+    "crate": CRATE,
+}
+
+
+def all_tile_sprites() -> dict[str, tuple[str, ...]]:
+    """Every TILE x TILE grid by name, for validation."""
+    sprites = dict(TILE_SPRITES)
+    sprites.update({f"bomb{i}": rows for i, rows in enumerate(BOMB_FRAMES)})
+    sprites.update({f"flame{i}": rows for i, rows in enumerate(FLAME_FRAMES)})
+    sprites["gate_closed"] = GATE_CLOSED
+    sprites["gate_flash"] = GATE_FLASH
+    sprites.update({f"crate_break{i}": rows for i, rows in enumerate(CRATE_BREAK)})
+    sprites.update({f"gate_open{i}": rows for i, rows in enumerate(GATE_OPEN_FRAMES)})
+    return sprites
+
+
+def validate_all() -> None:
+    """Check every grid in this module. Called once when sprites are built."""
+    for name, rows in all_tile_sprites().items():
+        validate(name, rows, (TILE, TILE))
+    for (facing, frame), rows in CHAR_FRAMES.items():
+        validate(f"char_{facing}{frame}", rows, (TILE, TILE), allow_placeholders=True)
+    for i, rows in enumerate(DEATH_FRAMES):
+        validate(f"death{i}", rows, (TILE, TILE), allow_placeholders=True)
+    validate("icon_bomb", ICON_BOMB)
+    validate("icon_bomb_armed", ICON_BOMB_ARMED)
