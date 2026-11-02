@@ -126,7 +126,9 @@ BOMB = (
     "...0011111100...",
     ".....000000.....",
 )
-BOMB_FRAMES = (BOMB,)
+# Pulse frame: the body glows red. Bombs pulse faster as their countdown drops.
+BOMB_PULSE = apply_colors(BOMB, {"1": "2", "6": "8", "7": "e", "a": "7"})
+BOMB_FRAMES = (BOMB, BOMB_PULSE)
 
 # ------------------------------------------------------------------- flames
 # One colour scheme for every blast. The last frame is the steady flame that
@@ -150,7 +152,87 @@ FLAME_STEADY = (
     ".88899999999888.",
     "..8.88888888.8..",
 )
-FLAME_FRAMES = (FLAME_STEADY,)
+FLAME_SMALL = (
+    "................",
+    "................",
+    "................",
+    "......8888......",
+    ".....899998.....",
+    "....89aaaa98....",
+    "...89aa77aa98...",
+    "...89a7777a98...",
+    "...89a7777a98...",
+    "...89aa77aa98...",
+    "....89aaaa98....",
+    ".....899998.....",
+    "......8888......",
+    "................",
+    "................",
+    "................",
+)
+
+FLAME_MEDIUM = (
+    "................",
+    "................",
+    "....88888888....",
+    "...8899999988...",
+    "..899aaaaaa998..",
+    "..89aa7777aa98..",
+    "..89a777777a98..",
+    "..89a777777a98..",
+    "..89a777777a98..",
+    "..89a777777a98..",
+    "..89aa7777aa98..",
+    "..899aaaaaa998..",
+    "...8899999988...",
+    "....88888888....",
+    "................",
+    "................",
+)
+# Growing burst, then the steady flame.
+FLAME_FRAMES = (FLAME_SMALL, FLAME_MEDIUM, FLAME_STEADY)
+
+# ----------------------------------------------------------- breaking crate
+# Drawn over the floor (and over the flames) on the tick a crate is destroyed.
+
+CRATE_BREAK = (
+    (
+        "2222222..2222222",
+        "29999994.9999942",
+        "2944444..4444442",
+        "2949444.44449442",
+        "294494.44449442.",
+        "2944494..94444.2",
+        "294444.949444.2.",
+        "..44444994444...",
+        "..444449944442..",
+        "2944449.4944442.",
+        "29444944.494442.",
+        "2944944..4494442",
+        "2949444.44449442",
+        "294444.444444442",
+        "244444..44444442",
+        "222222..22222222",
+    ),
+    (
+        "................",
+        ".29.........942.",
+        "..94......494...",
+        "...4..........2.",
+        "................",
+        "......2.........",
+        ".24.......94....",
+        "..9.............",
+        "..........4.2...",
+        "....42..........",
+        "...2.........94.",
+        "................",
+        ".9.....24.......",
+        "..4.........2...",
+        "................",
+        "................",
+    ),
+)
 
 # --------------------------------------------------------------------- gate
 # A hatch in the floor: barred while closed, a glowing portal once open.
@@ -193,7 +275,15 @@ _GATE_OPEN_BASE = (
     "3bbbbbbbbbbbbbb3",
     "0333333333333330",
 )
-GATE_OPEN_FRAMES = (_GATE_OPEN_BASE,)
+# The open portal shimmers: one frame per tick, alternating.
+GATE_OPEN_FRAMES = (
+    _GATE_OPEN_BASE,
+    apply_colors(_GATE_OPEN_BASE, {"1": "c", "c": "7", "7": "1"}),
+)
+# White blink drawn over the gate on the tick it is revealed or opens.
+GATE_FLASH = apply_colors(
+    GATE_CLOSED, {ch: "7" for ch in "123456789abcdef"}
+)
 
 # --------------------------------------------------------------- characters
 # One original design for all four: a round hooded figure with a dark visor.
@@ -258,12 +348,65 @@ _CHAR_RIGHT = (
 
 FACINGS = ("down", "up", "left", "right")
 
-# (facing, walk frame) -> grid. Frame 0 is the standing pose.
+
+def _with_rows(rows: tuple[str, ...], replacements: dict[int, str]) -> tuple[str, ...]:
+    """``rows`` with some rows replaced, for walk frames that only move the feet."""
+    return tuple(replacements.get(i, row) for i, row in enumerate(rows))
+
+
+_STRIDE = {14: "...0QQ0..0QQ0...", 15: "...000....000..."}
+
+# (facing, walk frame) -> grid. Frame 0 is the standing pose, frame 1 the stride.
 CHAR_FRAMES = {
     ("down", 0): _CHAR_DOWN,
+    ("down", 1): _with_rows(_CHAR_DOWN, _STRIDE),
     ("up", 0): _CHAR_UP,
+    ("up", 1): _with_rows(_CHAR_UP, _STRIDE),
     ("right", 0): _CHAR_RIGHT,
+    ("right", 1): _with_rows(_CHAR_RIGHT, _STRIDE),
 }
+
+# Death, all within one tick: a white flash of the body, a puff in the
+# character's colour, then fading sparks. After the tick the character is gone.
+DEATH_FRAMES = (
+    apply_colors(_CHAR_DOWN, {ch: "7" for ch in "0123456789abcdefPQ"}),
+    (
+        "................",
+        "................",
+        "................",
+        "................",
+        ".....7....7.....",
+        "...7..6PP6..7...",
+        "....66P77P66....",
+        "..7.6P7777P6.7..",
+        "...6P777777P6...",
+        "...6P777777P6...",
+        "..7.6P7777P6.7..",
+        "....66P77P66....",
+        "...7..6PP6..7...",
+        ".....7....7.....",
+        "................",
+        "................",
+    ),
+    (
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        ".....7....7.....",
+        "................",
+        "...7...PP...7...",
+        ".......PP.......",
+        "...7........7...",
+        "................",
+        ".....7....7.....",
+        "................",
+        "................",
+        "................",
+        "................",
+    ),
+)
 
 # ------------------------------------------------------------- panel icons
 
@@ -292,6 +435,8 @@ def all_tile_sprites() -> dict[str, tuple[str, ...]]:
     sprites.update({f"bomb{i}": rows for i, rows in enumerate(BOMB_FRAMES)})
     sprites.update({f"flame{i}": rows for i, rows in enumerate(FLAME_FRAMES)})
     sprites["gate_closed"] = GATE_CLOSED
+    sprites["gate_flash"] = GATE_FLASH
+    sprites.update({f"crate_break{i}": rows for i, rows in enumerate(CRATE_BREAK)})
     sprites.update({f"gate_open{i}": rows for i, rows in enumerate(GATE_OPEN_FRAMES)})
     return sprites
 
@@ -302,5 +447,7 @@ def validate_all() -> None:
         validate(name, rows, (TILE, TILE))
     for (facing, frame), rows in CHAR_FRAMES.items():
         validate(f"char_{facing}{frame}", rows, (TILE, TILE), allow_placeholders=True)
+    for i, rows in enumerate(DEATH_FRAMES):
+        validate(f"death{i}", rows, (TILE, TILE), allow_placeholders=True)
     validate("icon_bomb", ICON_BOMB)
     validate("icon_bomb_armed", ICON_BOMB_ARMED)
