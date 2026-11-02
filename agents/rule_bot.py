@@ -25,8 +25,12 @@ an escape, which only ever makes it more careful.
 
 Timing used throughout, matching ``BombermanEnv.step``: a bomb shown with
 ``countdown`` c explodes during the c-th next action, after that action's
-moves. A bomb placed now explodes during action ``1 + BOMB_FUSE`` and blocks
-movement from action 2 on.
+moves. A bomb placed now explodes during action ``1 + bomb_fuse`` and blocks
+movement from action 2 on. Fuse, blast range and flame duration come from
+``state["rules"]``. A cell burned on action e keeps burning (and killing)
+through action ``e + flame_ticks - 1``, and a cell already burning with
+``ticks_left`` k burns through action ``k - 1``; the bot treats every such
+action as deadly on that cell.
 """
 
 import random
@@ -36,7 +40,6 @@ from dataclasses import dataclass
 from game.environment import (
     AGENT_ID,
     BLAST_RANGE,
-    BOMB_FUSE,
     GATE_POSITION,
     MAP_HEIGHT,
     MAP_WIDTH,
@@ -77,7 +80,7 @@ def _inside(x: int, y: int) -> bool:
     return 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT
 
 
-def blast_cells(grid, x: int, y: int, bomb_cells) -> set:
+def blast_cells(grid, x: int, y: int, bomb_cells, blast_range: int = BLAST_RANGE) -> set:
     """Cells a bomb at (x, y) burns, with the engine's rules.
 
     Walls stop a ray and do not burn. Crates and other bombs' cells burn and
@@ -85,7 +88,7 @@ def blast_cells(grid, x: int, y: int, bomb_cells) -> set:
     """
     cells = {(x, y)}
     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        for distance in range(1, BLAST_RANGE + 1):
+        for distance in range(1, blast_range + 1):
             cx, cy = x + dx * distance, y + dy * distance
             if not _inside(cx, cy) or grid[cy][cx] is Cell.WALL:
                 break
@@ -95,7 +98,7 @@ def blast_cells(grid, x: int, y: int, bomb_cells) -> set:
     return cells
 
 
-def plan_bombs(grid, bombs) -> list:
+def plan_bombs(grid, bombs, blast_range: int = BLAST_RANGE) -> list:
     """Predict when each bomb explodes, including chain reactions.
 
     ``bombs`` holds ``(x, y, explode_at, blocks_from)`` tuples. A bomb whose
@@ -103,7 +106,7 @@ def plan_bombs(grid, bombs) -> list:
     """
     bombs = list(bombs)
     bomb_cells = {(b[0], b[1]) for b in bombs}
-    blasts = [frozenset(blast_cells(grid, b[0], b[1], bomb_cells)) for b in bombs]
+    blasts = [frozenset(blast_cells(grid, b[0], b[1], bomb_cells, blast_range)) for b in bombs]
     times = [b[2] for b in bombs]
     changed = True
     while changed:
@@ -120,12 +123,19 @@ def plan_bombs(grid, bombs) -> list:
     ]
 
 
-def danger_times(planned) -> dict:
-    """Cell -> set of actions (1 = next) on which that cell burns."""
+def danger_times(planned, flame_ticks: int = 1, burning=None) -> dict:
+    """Cell -> set of actions (1 = next) on which that cell burns.
+
+    ``burning`` maps cells already burning to their ``ticks_left``.
+    """
     danger: dict = {}
     for bomb in planned:
         for cell in bomb.blast:
-            danger.setdefault(cell, set()).add(bomb.explode_at)
+            danger.setdefault(cell, set()).update(
+                range(bomb.explode_at, bomb.explode_at + flame_ticks))
+    for cell, ticks_left in (burning or {}).items():
+        if ticks_left > 1:  # a flame on its last tick is out by the next action
+            danger.setdefault(cell, set()).update(range(1, ticks_left))
     return danger
 
 
@@ -134,7 +144,8 @@ def bombs_from_state(state: dict) -> list:
     return [(b["x"], b["y"], b["countdown"], 1) for b in state["bombs"]]
 
 
-def steps_to_safety(grid, start: Cell2, planned, first_action: Action):
+def steps_to_safety(grid, start: Cell2, planned, first_action: Action,
+                    flame_ticks: int = 1, burning=None):
     """Actions needed to reach a cell no known blast will reach, or ``None``.
 
     ``first_action`` is taken now; ``Action.BOMB`` means staying put (the
@@ -143,8 +154,8 @@ def steps_to_safety(grid, start: Cell2, planned, first_action: Action):
     search tries every move and wait each action, dying on any cell that
     burns on that action.
     """
-    danger = danger_times(planned)
-    horizon = max((b.explode_at for b in planned), default=0)
+    danger = danger_times(planned, flame_ticks, burning)
+    horizon = max((max(times) for times in danger.values() if times), default=0)
 
     def walkable(cell, t):
         x, y = cell
@@ -212,8 +223,8 @@ class RuleBot:
         ]
 
     @staticmethod
-    def _bomb_value(grid, cell: Cell2, bomb_cells, opponents) -> int:
-        burned = blast_cells(grid, cell[0], cell[1], bomb_cells)
+    def _bomb_value(grid, cell: Cell2, bomb_cells, opponents, blast_range: int) -> int:
+        burned = blast_cells(grid, cell[0], cell[1], bomb_cells, blast_range)
         crates = sum(1 for x, y in burned if grid[y][x] is Cell.BLOCK)
         hit = sum(1 for o in opponents if o in burned)
         return crates * CRATE_VALUE + hit * OPPONENT_VALUE
@@ -248,11 +259,14 @@ class RuleBot:
             for c in state["characters"]
             if c["id"] != me and not c["dead"] and c["id"] not in armed
         }
-        return [(x, y, 1 + BOMB_FUSE, 2) for x, y in sorted(cells - occupied)]
+        fuse = state["rules"]["bomb_fuse"]
+        return [(x, y, 1 + fuse, 2) for x, y in sorted(cells - occupied)]
 
-    def _escape_after_bomb(self, grid, cell: Cell2, bombs) -> bool:
-        planned = plan_bombs(grid, bombs + [(cell[0], cell[1], 1 + BOMB_FUSE, 2)])
-        return steps_to_safety(grid, cell, planned, Action.BOMB) is not None
+    def _escape_after_bomb(self, grid, cell: Cell2, bombs, rules: dict, burning) -> bool:
+        new_bomb = (cell[0], cell[1], 1 + rules["bomb_fuse"], 2)
+        planned = plan_bombs(grid, bombs + [new_bomb], rules["blast_range"])
+        return steps_to_safety(grid, cell, planned, Action.BOMB,
+                               rules["flame_ticks"], burning) is not None
 
     # ------------------------------------------------------------------ policy
 
@@ -263,18 +277,23 @@ class RuleBot:
 
         grid = state["grid"]
         here = (character["x"], character["y"])
+        rules = state["rules"]
+        blast_range, flame_ticks = rules["blast_range"], rules["flame_ticks"]
+        burning = {(f["x"], f["y"]): f["ticks_left"] for f in state["flames"]}
         bombs = bombs_from_state(state)
         bomb_cells = {(b[0], b[1]) for b in bombs}
-        planned = plan_bombs(grid, bombs)
-        danger = danger_times(planned)
+        planned = plan_bombs(grid, bombs, blast_range)
+        danger = danger_times(planned, flame_ticks, burning)
 
         possible = self._possible_bombs(state, me)
-        cautious_plan = plan_bombs(grid, bombs + possible)
-        steps = {a: steps_to_safety(grid, here, cautious_plan, a) for a in STEP_ACTIONS}
+        cautious_plan = plan_bombs(grid, bombs + possible, blast_range)
+        steps = {a: steps_to_safety(grid, here, cautious_plan, a, flame_ticks, burning)
+                 for a in STEP_ACTIONS}
         safe = [a for a in STEP_ACTIONS if steps[a] is not None]
         if not safe:
             # No action survives the worst case; use the bombs really there.
-            steps = {a: steps_to_safety(grid, here, planned, a) for a in STEP_ACTIONS}
+            steps = {a: steps_to_safety(grid, here, planned, a, flame_ticks, burning)
+                     for a in STEP_ACTIONS}
             safe = [a for a in STEP_ACTIONS if steps[a] is not None]
         if not safe:
             return Action.WAIT  # trapped: no action survives
@@ -305,8 +324,8 @@ class RuleBot:
         can_bomb = not has_bomb and here not in bomb_cells
 
         # 3. Bomb here if it hits something and the bot can still get away.
-        if can_bomb and self._bomb_value(grid, here, bomb_cells, opponents) > 0:
-            if self._escape_after_bomb(grid, here, bombs + possible):
+        if can_bomb and self._bomb_value(grid, here, bomb_cells, opponents, blast_range) > 0:
+            if self._escape_after_bomb(grid, here, bombs + possible, rules, burning):
                 return Action.BOMB
 
         # 4. Walk toward the nearest useful bomb spot.
@@ -314,12 +333,12 @@ class RuleBot:
         for cell, (dist, first) in reach.items():
             if cell == here:
                 continue
-            value = self._bomb_value(grid, cell, bomb_cells, opponents)
+            value = self._bomb_value(grid, cell, bomb_cells, opponents, blast_range)
             if value > 0:
                 spots.append((dist, -value, cell, first))
         spots.sort()
         for dist, _, cell, first in spots[:MAX_BOMB_SPOTS_CHECKED]:
-            if self._escape_after_bomb(grid, cell, []):
+            if self._escape_after_bomb(grid, cell, [], rules, burning):
                 return go(first)
 
         # 5. Nothing useful in reach.
