@@ -2,6 +2,172 @@
 
 ## Next History entry goes here so older entries get pushed down, newest is on top.
 
+## 2026-11-05 Stage 1 of the project setup: evaluation, opponent ladder, Gym wrapper, training scripts (Task 6)
+
+**Author:** Basel Swaid  
+**Commits:** `dfa12f0` (part 1 evaluation) `d993524` (part 2 ladder) `97ff122` (part 3 Gym wrapper) `4930028` (part 4 training scripts) `[merge hash]` (merge PR #7)  
+**Tests:** 353 passing (256 before + 97 new).
+
+### Start here (the short version)
+* Stage 1 of the project is now about **setup only**: everything needed so stage 2 of the project can start training on day one. **Nothing was trained for real yet**, only tiny smoke runs to prove every script works end to end
+* Four new pieces:
+  1. **Evaluation can play the real game timing** (`--game-rules`)
+  2. **An opponent ladder** from easy to hard: `random < noisy50 < noisy25 < noisy10 < rule`
+  3. **A Gym wrapper** in `rl/` that turns our game into a standard RL environment
+  4. **Training scripts** for tabular Q-learning and PPO, an agent evaluator, and run logging
+* **Every MDP number (rewards, step limit, hyperparameters) lives in one file: `rl/config.py`**, marked v0. Changing a value never needs code changes
+
+### New packages
+* `requirements.txt` now has `numpy`, `gymnasium`, `torch` and `stable-baselines3` (min versions that work on Python 3.10 to 3.13)
+* Install: `pip install -r requirements.txt` (on Windows this gives the small CPU torch automatically)
+* On Linux run `pip install torch --index-url https://download.pytorch.org/whl/cpu` first or pip downloads several GB of GPU libraries we don't need
+* You can still play the game and run the old tests without these packages, the RL tests just skip
+
+### Part 1: evaluation with the real rules
+* `agents/match.py`: `play_game(..., rules=None)`. No `rules` means exactly the old behavior (checked on 150 games against the old file)
+* `agents/evaluate.py`: new `--game-rules` flag, and the output now prints which rules were used
+* Run: `python -m agents.evaluate --games 200 --game-rules`
+* Result with the real rules: rule bot as agent vs 3 random bots wins 100%, random bot wins 0%
+
+### Part 2: opponent difficulty ladder
+* New file `agents/noisy_bot.py`: a rule bot that takes a random action some % of the time (Joelle's `rule_bot.py` and `random_bot.py` are untouched)
+* `LADDER` has 5 levels: `random`, `noisy50` (50% random), `noisy25`, `noisy10`, `rule`
+* Run both ladder tables: `python -m agents.ladder_eval --games 200 --game-rules`
+* It really is a ladder (200 games each, real rules):
+
+  | Level | Win as agent vs 3 random | Rule bot's win vs 3 of this level |
+  |---|---|---|
+  | random | 0% | 100% |
+  | noisy50 | 30% | 99% |
+  | noisy25 | 59.5% | 75.5% |
+  | noisy10 | 83.5% | 27% |
+  | rule | 100% | 0% (90.5% timeouts) |
+
+* Why it matters: stage 2 of the project can train in steps (random first, then harder levels) instead of jumping straight from "opponents kill themselves" to "opponents never die"
+
+### Part 3: the Gym wrapper (`rl/`)
+* `rl/bomberman_env.py`: `BombermanGymEnv(opponents=...)`, a standard Gymnasium environment around our engine. **The engine itself is untouched**
+* Always plays the real game: `GAME_RULES` and random crates
+* **Opponents** are a parameter:
+  * a ladder level name like `"random"` or `"noisy25"` (3 bots of that level)
+  * a list of your own controllers (later: frozen copies of our agent)
+  * or `None` for single player (you can only lose there, the gate never opens without NPCs)
+  * NPCs that get no controller just stand still and wait
+* **Actions:** 6 (up, down, left, right, wait, bomb) as numbers 0 to 5
+* **Observation:** 10 layers of 11×11 grids, all values between 0 and 1
+  1. walls
+  2. crates
+  3. bombs (how long until they explode)
+  4. flames (how long they still burn)
+  5. me
+  6. opponents
+  7. gate hidden
+  8. gate closed
+  9. gate open
+  10. "my bomb is ready" (the whole layer is 1 or 0)
+* The observation can be built **from any character's point of view** (`encode_observation(state, me)`), so a frozen agent playing as an NPC sees itself as "me"
+* **Reward v0** (all in `rl/config.py`):
+
+  | Event | Reward |
+  |---|---|
+  | win | +1.0 |
+  | loss (any death, including my own bomb) | −1.0 |
+  | draw | −0.5 |
+  | each opponent my blast killed (lingering flames count) | +0.3 |
+  | each crate my blast destroyed | +0.02 |
+  | every step | −0.001 |
+  | a move that didn't move me (wall, crate, bomb) | −0.01 |
+
+* `info["reward_terms"]` shows how much each term contributed on every step, useful in stage 2 of the project to see *why* the agent gets its reward
+* **Episode ends** (`terminated`) on win, loss or draw. **Cut off** (`truncated`) after 800 steps (about 3.3 minutes of play)
+* Seeds match `play_game`: `env.reset(seed=5)` is exactly the same game as the bot evaluation with seed 5, so agents and bots are compared on identical games
+* Passes Gymnasium's official `check_env`
+
+### Part 4: training scripts and logging (smoke runs only)
+* **Tabular Q-learning** (our own code, no library): `python -m rl.train_tabular --episodes 3000 --seed 0`
+  * Plays a **tiny practice stage** (`rl/tabular_env.py`): single player, fixed map, the episode ends when the first crate is destroyed or the agent dies
+  * Reward: +1 crate destroyed while alive, −1 death, −0.001 per step
+  * State: my position + my bomb (cell and countdown) + where my old flames still burn
+  * Smoke run: 2 seconds, the agent destroys a crate without dying in 100% of the evaluation games
+* **PPO** (Stable-Baselines3, cited in the code): `python -m rl.train_ppo --timesteps 10000 --seed 0`
+  * Plays the full game vs 3 random bots, with a small network made for our 11×11 grid (SB3's default needs bigger images)
+  * Smoke run: under a minute. The agent mostly learns to wait (expected after only 10,000 steps, that's what stage 2 of the project fixes)
+* **Evaluate any saved agent:** `python -m rl.evaluate_agent --run runs/<folder> --opponents random` (tabular also has `--stage tiny|full`)
+* **Every run gets its own folder** in `runs/` (ignored by git) with its config, seed, git commit, whether there were uncommitted changes, package versions, metrics and the saved model, so every result can be reproduced
+* `docs/EXPERIMENTS.md` is ready: one row per run we want to keep (smoke runs don't go there)
+* Every script takes `--config my_overrides.json` to change values without touching code, for example `{"max_steps": 600, "reward": {"kill": 0.5}}`
+
+### Decisions I made
+
+- **Stage 1 of the project is setup only, training moves to stage 2**
+  - Why: experiments should start on a finished setup, not one that keeps changing
+  - Alternatives considered: first training runs already in stage 1 (would mix building and research)
+  - Status: provisional (needs team OK)
+
+- **All MDP values in one config file, marked v0**
+  - Why: the team can change any number at the meeting without anyone rewriting code
+  - Alternatives considered: values spread across the scripts
+  - Status: provisional (needs team OK)
+
+- **The reward v0 table above, with the win larger than everything else combined**
+  - Why: kills and crates guide the agent but never pay more than winning, so kamikaze kills don't pay off
+  - Alternatives considered: only win/loss rewards (very slow to learn), bigger kill rewards (risk of suicide attacks)
+  - Status: provisional (needs team OK)
+
+- **Episode cut off at 800 steps**
+  - Why: long enough to finish a real game, short enough that a waiting agent doesn't run forever
+  - Alternatives considered: 400 (the evaluation limit, too short with the 9 tick fuse)
+  - Status: provisional (needs team OK)
+
+- **Tabular only on a tiny stage**
+  - Why: a table can't hold the full game, the tiny stage is our "fundamentals" algorithm from the course
+  - Alternatives considered: tabular on the full game (billions of states, can't work)
+  - Status: provisional (needs team OK)
+
+- **PPO first, DQN in stage 2 of the project**
+  - Why: PPO is more forgiving for a first setup
+  - Status: provisional (needs team OK)
+
+- **NPCs without a controller stand still**
+  - Why: lets us build an easy "target practice" stage for the curriculum later
+  - Alternatives considered: removing extra NPCs (changes the game)
+  - Status: provisional (needs team OK)
+
+- **Opponent ladder levels 50%, 25% and 10% random**
+  - Why: the two tables above show each step really is harder
+  - Status: provisional (needs team OK)
+
+### ANY OBJECTIONS ON:
+Please reply in the group if you disagree, otherwise these become team-agreed
+* The reward values, the 800 step limit and the PPO and tabular settings in `rl/config.py`
+* The observation layers
+* The ladder levels
+* Moving all real training to stage 2 of the project
+
+### AI-assisted parts
+* Claude Code wrote all the code and the 97 new tests
+* The Claude supervisor planned the spec, reviewed the plan, and verified the result on its own machine with every package installed:
+  * every part's tests
+  * the old evaluation unchanged on 150 games
+  * the ladder order on seeds the builder never used
+  * the wrapper's rewards and observation compared step by step with its **own independent implementation** over 330 games (every reward term covered)
+  * its own smoke runs
+* I made the design calls and applied and merged the code
+
+### Open questions for the team
+* Confirm everything under "ANY OBJECTIONS ON"
+* **Buffs** (bigger blast, speed) are the last game item of stage 1 of the project. We need to decide how speed works when one step is one tile
+* Literature review and report skeleton: who takes them (the guideline wants the algorithm choice justified with state of the art research)
+* `agents/evaluate.py` still stops games at 400 steps: with the real timing, rule bot vs rule bot times out 90% of the time
+* Give the Claude GitHub App access to the repo (every task so far needed a patch file instead of a direct push)
+* README: add the `rl/` commands
+
+### Next task for whoever picks this up
+
+**Buffs (last item of stage 1 of the project).** Crates should sometimes drop a buff when destroyed, with a probability per buff. We planned a bigger blast range and more speed(idk if thats relevant). The engine already reads its rules from settings, so buffs should fit the same way, and the wrapper's observation will need a layer for buffs on the floor and for each character's current buffs. Speed needs a decision first, because one step is exactly one tile.
+
+**Stage 2 of the project: first real training.** Everything is ready: pick an opponent level, run `rl.train_tabular` or `rl.train_ppo` with a real number of steps and several seeds, evaluate with `rl.evaluate_agent`, and log every run you keep in `docs/EXPERIMENTS.md`. Start with the tiny stage and PPO vs `random`, then climb the ladder.
+
 ## 2026-11-02 Retro UI and real game timing (Tasks 4 and 5) + track B review
 
 **Author:** Basel Swaid  
