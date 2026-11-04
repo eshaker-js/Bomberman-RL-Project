@@ -4,6 +4,9 @@ This is evaluation tooling, not a game rule. ``max_steps`` only stops a game
 that would otherwise never end (for example two careful bots dodging each
 other forever) and reports it as ``"timeout"``. The real episode limit for
 training belongs to the Gym wrapper (track C).
+
+``rules`` picks the timing: ``None`` (the default) keeps the engine defaults
+(fuse 4, flames 1), and ``rules=GAME_RULES`` plays the real game's timing.
 """
 
 from dataclasses import dataclass, field
@@ -35,13 +38,18 @@ def play_game(
     *,
     max_steps: int = DEFAULT_MAX_STEPS,
     random_crates: bool = True,
+    rules=None,
 ) -> GameResult:
-    """Play one game. ``bots`` maps every character ID (0-3) to a bot."""
+    """Play one game. ``bots`` maps every character ID (0-3) to a bot.
+
+    ``rules`` is passed to ``BombermanEnv`` as keyword arguments, for example
+    ``GAME_RULES``. ``None`` uses the engine defaults, exactly as before.
+    """
     missing = {AGENT_ID, *NPC_IDS} - set(bots)
     if missing:
         raise ValueError(f"no bot for characters {sorted(missing)}")
 
-    env = BombermanEnv(with_npcs=True, random_crates=random_crates)
+    env = BombermanEnv(with_npcs=True, random_crates=random_crates, **(rules or {}))
     state = env.reset(seed=seed)
     for character_id, bot in bots.items():
         bot.reset(bot_seed(seed, character_id))
