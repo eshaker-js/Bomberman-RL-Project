@@ -82,7 +82,7 @@ class PlayGameRulesTest(unittest.TestCase):
 
     def test_game_rules_mapping_is_not_changed(self):
         play_game(_table(1), 1, max_steps=3, rules=GAME_RULES)
-        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4})
+        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4, "buffs": GAME_RULES["buffs"]})
 
 
 class EvaluateRulesTest(unittest.TestCase):

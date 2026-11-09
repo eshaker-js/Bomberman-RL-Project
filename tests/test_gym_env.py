@@ -561,7 +561,7 @@ class IsolationTest(unittest.TestCase):
         env = BombermanGymEnv("random")
         env.reset(seed=0)
         env.step(0)
-        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4})
+        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4, "buffs": GAME_RULES["buffs"]})
 
 
 if __name__ == "__main__":

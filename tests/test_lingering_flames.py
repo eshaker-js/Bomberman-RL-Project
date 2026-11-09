@@ -77,7 +77,7 @@ class TestSettings(unittest.TestCase):
         self.assertEqual(env.get_state()["flames"], [])
 
     def test_game_rules_values_and_read_only(self):
-        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4})
+        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4, "buffs": GAME_RULES["buffs"]})
         with self.assertRaises(TypeError):
             GAME_RULES["bomb_fuse"] = 3  # type: ignore[index]
 

@@ -128,7 +128,7 @@ class TestFlamesOnScreen(unittest.TestCase):
                         cell = (f["x"], f["y"])
                         if cell not in fresh:
                             level = flame_fade_level(f["ticks_left"], 4)
-                            self.assertEqual(drawn[cell], ("flame", "fade", level))
+                            self.assertEqual(drawn[cell], ("flame", "steady") if level == 0 else ("flame", "fade", level))
                         elif t == 0.0:
                             self.assertEqual(drawn[cell], ("flame", 0))
 

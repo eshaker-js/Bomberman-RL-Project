@@ -15,7 +15,7 @@ often it died, how often it killed itself, its kills and crates.
 
 Every game uses a fixed seed, so the same command always prints the same numbers.
 Without ``--game-rules`` both experiments use the engine defaults (fuse 4,
-flames 1); with it they use ``GAME_RULES`` (fuse 9, flames 4).
+flames 1); with it they use ``GAME_RULES`` (fuse 4, flames 4, buffs on).
 """
 
 import argparse

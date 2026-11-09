@@ -125,9 +125,10 @@ BUFF_RULES = BuffRules(
 # Gym wrapper, the evaluation with ``--game-rules``) creates its env with
 # ``BombermanEnv(**GAME_RULES)``. The engine defaults stay at BOMB_FUSE and
 # FLAME_TICKS without buffs so the original rules remain testable.
-# A 4-tick fuse (1 s at 250 ms per tick) and flames that stay deadly for
-# 4 ticks (1 s). Provisional (v0) until the whole team confirms.
-GAME_RULES = MappingProxyType({"bomb_fuse": 4, "flame_ticks": 4})
+# A 4-tick fuse (1 s at 250 ms per tick), flames that stay deadly for
+# 4 ticks (1 s), and the buffs of BUFF_RULES. Provisional (v0) until the
+# whole team confirms.
+GAME_RULES = MappingProxyType({"bomb_fuse": 4, "flame_ticks": 4, "buffs": BUFF_RULES})
 
 
 class Cell(Enum):

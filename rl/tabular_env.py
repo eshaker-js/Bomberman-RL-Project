@@ -118,7 +118,8 @@ class TinyStageEnv(gym.Env):
     def __init__(self, config: TabularConfig | None = None) -> None:
         super().__init__()
         self.config = config if config is not None else TabularConfig()
-        self.engine = BombermanEnv(random_crates=False, **GAME_RULES)
+        # GAME_RULES timing without buffs: the tiny stage has no buffs.
+        self.engine = BombermanEnv(random_crates=False, **{**GAME_RULES, "buffs": None})
         self.tracker = TabularStateTracker(AGENT_ID)
         self.action_space = spaces.Discrete(len(ACTIONS))
         self.observation_space = spaces.Discrete(N_STATES)
