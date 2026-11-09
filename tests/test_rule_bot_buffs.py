@@ -162,6 +162,30 @@ class TestSecondBomb(unittest.TestCase):
 
 
 class TestSafetyWithBuffs(unittest.TestCase):
+    def test_possible_bomb_does_not_hide_a_longer_real_ray(self):
+        """Reproduces buff_eval seed 32, step 526 (range 4 vs rule bots).
+
+        The agent's range-4 bomb at (8, 1) explodes next action; NPC 1 stands
+        at (7, 1) and could bomb there (range 2). Planned together, that
+        possible bomb's cell stopped the real ray at (7, 1), so (4, 1) looked
+        safe. If NPC 1 does not bomb, the real ray reaches (4, 1).
+        """
+        def scene():
+            env = BombermanEnv(with_npcs=True, **GAME_RULES)
+            for x in range(len(env.grid[1])):
+                if env.grid[1][x] is Cell.BLOCK:
+                    env.grid[1][x] = Cell.EMPTY
+            env.player_x, env.player_y = 5, 1
+            env.characters[1].x, env.characters[1].y = 7, 1
+            env._bombs[(8, 1)] = (0, Bomb(8, 1, 1, range=4))
+            return env
+
+        for seed in range(30):
+            env = scene()
+            action = RuleBot(seed).act(env.get_state(), 0)
+            self.assertNotEqual(action, Action.LEFT)
+            self.assertFalse(env.step(action)["dead"], f"seed {seed}: {action}")
+
     def test_no_rule_bot_dies_in_a_lingering_burn_flame(self):
         """Four rule bots with long ranges and burn 2: nobody walks into a flame
         from an earlier tick, including the 5- and 6-tick burn cells."""

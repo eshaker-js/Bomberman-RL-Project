@@ -151,6 +151,22 @@ def plan_bombs(grid, bombs, blast_range: int = BLAST_RANGE) -> list:
     ]
 
 
+def cautious_plan(grid, bombs, possible, blast_range: int = BLAST_RANGE) -> list:
+    """Plan for the worst case of bombs that may or may not be placed.
+
+    ``possible`` bombs may never appear. Planned together with the real
+    ``bombs``, a possible bomb's cell stops a real bomb's ray, which hides
+    the cells beyond it when the possible bomb has a shorter range. So the
+    plan is the union of both cases: with and without the possible bombs.
+    Danger and blocking are then those of either case. With equal ranges
+    the second plan adds nothing.
+    """
+    planned = plan_bombs(grid, list(bombs) + list(possible), blast_range)
+    if possible:
+        planned += plan_bombs(grid, bombs, blast_range)
+    return planned
+
+
 def danger_times(planned, flame_ticks: int = 1, burning=None) -> dict:
     """Cell -> set of actions (1 = next) on which that cell burns.
 
@@ -323,13 +339,16 @@ class RuleBot:
         return [(x, y, 1 + fuse, 2, *worst[(x, y)]) for x, y in sorted(worst)]
 
     def _escape_after_bomb(self, grid, cell: Cell2, bombs, rules: dict, burning,
-                           my_range: int | None = None, my_burn: int = 0) -> bool:
-        """Whether, after bombing ``cell``, some path escapes every bomb in ``bombs``
-        and the new one (with chain reactions and burn times)."""
+                           my_range: int | None = None, my_burn: int = 0,
+                           possible=()) -> bool:
+        """Whether, after bombing ``cell``, some path escapes every bomb in ``bombs``,
+        the new one and the ``possible`` opponent bombs (with chain reactions
+        and burn times), whether or not the possible bombs are placed."""
         if my_range is None:
             my_range = rules["blast_range"]
         new_bomb = (cell[0], cell[1], 1 + rules["bomb_fuse"], 2, my_range, my_burn)
-        planned = plan_bombs(grid, bombs + [new_bomb], rules["blast_range"])
+        planned = cautious_plan(grid, list(bombs) + [new_bomb], list(possible),
+                                rules["blast_range"])
         return steps_to_safety(grid, cell, planned, Action.BOMB,
                                rules["flame_ticks"], burning) is not None
 
@@ -351,8 +370,8 @@ class RuleBot:
         danger = danger_times(planned, flame_ticks, burning)
 
         possible = self._possible_bombs(state, me)
-        cautious_plan = plan_bombs(grid, bombs + possible, blast_range)
-        steps = {a: steps_to_safety(grid, here, cautious_plan, a, flame_ticks, burning)
+        worst_case = cautious_plan(grid, bombs, possible, blast_range)
+        steps = {a: steps_to_safety(grid, here, worst_case, a, flame_ticks, burning)
                  for a in STEP_ACTIONS}
         safe = [a for a in STEP_ACTIONS if steps[a] is not None]
         if not safe:
@@ -391,8 +410,8 @@ class RuleBot:
         # 3. Bomb here if it hits something and the bot can still get away
         # from every bomb on the board, its own earlier bombs included.
         if can_bomb and self._bomb_value(grid, here, bomb_cells, opponents, my_range) > 0:
-            if self._escape_after_bomb(grid, here, bombs + possible, rules, burning,
-                                       my_range, my_burn):
+            if self._escape_after_bomb(grid, here, bombs, rules, burning,
+                                       my_range, my_burn, possible):
                 return Action.BOMB
 
         # 4. Walk toward the nearest useful bomb spot.
