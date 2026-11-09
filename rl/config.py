@@ -31,6 +31,7 @@ class RewardConfig:
     crate: float = 0.02  # v0: per crate the agent's blast destroyed
     per_step: float = -0.001  # v0: every step
     bump: float = -0.01  # v0: a move action that left the position unchanged
+    buff: float = 0.0  # v0 (off): per buff picked up that raised one of my levels
 
 
 @dataclass(frozen=True)

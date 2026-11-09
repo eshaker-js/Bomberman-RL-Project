@@ -1,7 +1,8 @@
 """The tiny stage for tabular Q-learning, and its discrete state encoding.
 
 ``TinyStageEnv`` is a small Gymnasium env of its own (not a mode of the
-full wrapper): single-player, the fixed map, ``GAME_RULES`` timing. An
+full wrapper): single-player, the fixed map, ``GAME_RULES`` timing without
+buffs. An
 episode ends when the first crate is destroyed or the agent dies
 (``terminated``), or after ``max_steps`` steps (``truncated``). Reward (v0,
 from ``TabularConfig``): ``reward_death`` if the agent died on this step,
@@ -24,8 +25,8 @@ into. A new bomb and the old flames can exist together, hence two fields.
 Cells are indexed over every non-wall cell of the board (65), not only the
 fixed map's 47 floor cells, so the same encoding also works in the full game
 with random crates (``evaluate_agent --stage full``):
-65 x (65*9 + 1) x (65*4 + 1) = 9,941,490 possible indices. Only visited
-states are ever stored.
+65 x (65*4 + 1) x (65*4 + 1) = 4,427,865 possible indices with fuse 4 and
+flames 4. Only visited states are ever stored.
 """
 
 import gymnasium as gym
