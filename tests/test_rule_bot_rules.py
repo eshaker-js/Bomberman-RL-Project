@@ -71,7 +71,7 @@ class TestHelpers(unittest.TestCase):
 
 class TestReadsRules(unittest.TestCase):
     def test_possible_bombs_use_the_env_fuse(self):
-        for rules, fuse in (({}, 4), (dict(GAME_RULES), 9)):
+        for rules, fuse in (({}, 4), ({"bomb_fuse": 9}, 9)):
             state = BombermanEnv(with_npcs=True, **rules).get_state()
             possible = RuleBot()._possible_bombs(state, 0)
             self.assertEqual({b[2] for b in possible}, {1 + fuse})

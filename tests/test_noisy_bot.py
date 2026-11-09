@@ -144,7 +144,7 @@ class LadderTest(unittest.TestCase):
         with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
             ladder_eval.main()
         text = out.getvalue()
-        self.assertIn("GAME_RULES (fuse 9, flames 4)", text)
+        self.assertIn(f"GAME_RULES (fuse {GAME_RULES['bomb_fuse']}, flames {GAME_RULES['flame_ticks']})", text)
         for name in LADDER:
             self.assertIn(name, text)
 

@@ -64,7 +64,7 @@ def flame_items(items):
 
 class TestModesUseGameRules(unittest.TestCase):
     def test_every_mode_plays_game_rules(self):
-        expected = {"bomb_fuse": 9, "blast_range": 2, "flame_ticks": 4}
+        expected = {"bomb_fuse": GAME_RULES["bomb_fuse"], "blast_range": 2, "flame_ticks": GAME_RULES["flame_ticks"]}
         for session in (GameSession(MODE_FREE, 1), GameSession(MODE_BOTS, 1, "random"),
                         GameSession(MODE_BOTS, 1, "rule"), GameSession(MODE_BOTS, 1, "mixed")):
             with self.subTest(mode=session.mode, opponents=session.opponents):

@@ -77,13 +77,13 @@ class TestSettings(unittest.TestCase):
         self.assertEqual(env.get_state()["flames"], [])
 
     def test_game_rules_values_and_read_only(self):
-        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 9, "flame_ticks": 4})
+        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4})
         with self.assertRaises(TypeError):
             GAME_RULES["bomb_fuse"] = 3  # type: ignore[index]
 
     def test_env_from_game_rules(self):
         state = BombermanEnv(with_npcs=True, random_crates=True, **GAME_RULES).reset(seed=3)
-        self.assertEqual(state["rules"], {"bomb_fuse": 9, "blast_range": 2, "flame_ticks": 4})
+        self.assertEqual(state["rules"], {"bomb_fuse": GAME_RULES["bomb_fuse"], "blast_range": 2, "flame_ticks": GAME_RULES["flame_ticks"]})
 
     def test_bad_settings_rejected(self):
         for name in ("bomb_fuse", "flame_ticks"):
@@ -109,7 +109,7 @@ class TestSettings(unittest.TestCase):
 
 class TestFuse(unittest.TestCase):
     def test_fuse_9_explodes_9_actions_after_placing(self):
-        env = BombermanEnv(**GAME_RULES)
+        env = BombermanEnv(bomb_fuse=9, flame_ticks=4)
         state = env.step(B)
         self.assertEqual(state["bombs"], [{"owner": 0, "x": 1, "y": 1, "countdown": 9}])
         state = run(env, [R, R, R] + [W] * 5)

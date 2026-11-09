@@ -23,7 +23,7 @@ from agents.rule_bot import RuleBot  # noqa: E402
 from game.environment import BLAST_RANGE, GAME_RULES, Action  # noqa: E402
 
 DEFAULT_RULES = {"bomb_fuse": 4, "blast_range": BLAST_RANGE, "flame_ticks": 1}
-REAL_RULES = {"bomb_fuse": 9, "blast_range": BLAST_RANGE, "flame_ticks": 4}
+REAL_RULES = {"bomb_fuse": GAME_RULES["bomb_fuse"], "blast_range": BLAST_RANGE, "flame_ticks": GAME_RULES["flame_ticks"]}
 
 
 class SpyBot:
@@ -82,7 +82,7 @@ class PlayGameRulesTest(unittest.TestCase):
 
     def test_game_rules_mapping_is_not_changed(self):
         play_game(_table(1), 1, max_steps=3, rules=GAME_RULES)
-        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 9, "flame_ticks": 4})
+        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4})
 
 
 class EvaluateRulesTest(unittest.TestCase):
@@ -123,7 +123,7 @@ class EvaluateRulesTest(unittest.TestCase):
 
     def test_main_with_flag_uses_game_rules(self):
         text, rules = self._run_main("--game-rules")
-        self.assertIn("GAME_RULES (fuse 9, flames 4)", text)
+        self.assertIn(f"GAME_RULES (fuse {GAME_RULES['bomb_fuse']}, flames {GAME_RULES['flame_ticks']})", text)
         self.assertIn("Experiment A", text)
         self.assertIn("Experiment B", text)
         self.assertTrue(rules)
