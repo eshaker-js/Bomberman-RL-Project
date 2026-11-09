@@ -10,7 +10,8 @@ animates the tick from ``prev`` to ``cur`` with ``t`` from 0 to 1. Every
 effect ends by ``t = 1``, where ``scene`` equals ``static_scene(cur)``, so
 at the end of every tick the screen matches the state. "Died this tick",
 "crate broke" and "gate changed" are differences between ``prev`` and
-``cur``, never guesses.
+``cur``; buff drops, pickups and destructions are ``cur``'s events. Never
+guesses.
 
 Facing is the one thing the engine does not have. It is inferred from
 movement between two states and kept while a character stands still.
@@ -27,8 +28,11 @@ LAYER_TILE = 0
 LAYER_GATE = 1
 LAYER_BOMB = 2
 LAYER_FLAME = 3
-LAYER_EFFECT = 4  # crate debris and gate blinks, drawn over the flames
-LAYER_CHARACTER = 5
+# Buffs on the floor, over the flames: a crate's drop lies on a cell its own
+# blast is still burning. A buff and a bomb never share a cell.
+LAYER_BUFF = 4
+LAYER_EFFECT = 5  # crate debris, gate blinks and buff effects, over the flames
+LAYER_CHARACTER = 6
 
 DEFAULT_FACING = "down"
 _FACING_BY_DELTA = {(1, 0): "right", (-1, 0): "left", (0, -1): "up", (0, 1): "down"}
@@ -42,6 +46,9 @@ CRATE_BREAK_END = 0.6
 GATE_BLINK_END = 0.5
 GATE_BLINKS = 4  # on/off blinks per tick while t < GATE_BLINK_END
 DEATH_FRAME_COUNT = 3
+BUFF_POP = (0.15, 0.4)  # dropped buff: burst only, then badge with a ring, then badge
+BUFF_SPARKLE_END = 0.5  # picked-up buff: sparkle frames 0 then 1 until this
+BUFF_PUFF_END = 0.5  # destroyed buff: puff frames 0 then 1 until this
 
 
 class Item(NamedTuple):
@@ -84,14 +91,14 @@ def walk_frame(moved: bool, t: float) -> int:
     return 1 if moved and t < WALK_STRIDE_END else 0
 
 
-def bomb_pulses_per_tick(countdown: int) -> int:
+def bomb_pulses_per_tick(countdown: int, fuse: int = BOMB_FUSE) -> int:
     """1 pulse per tick at a full fuse, one more each tick it burns down."""
-    return max(1, BOMB_FUSE + 1 - countdown)
+    return max(1, fuse + 1 - countdown)
 
 
-def bomb_frame(countdown: int, t: float) -> int:
+def bomb_frame(countdown: int, t: float, fuse: int = BOMB_FUSE) -> int:
     """Pulse frame during the second half of each pulse; normal at ``t`` 0 and 1."""
-    phase = (t * bomb_pulses_per_tick(countdown)) % 1.0
+    phase = (t * bomb_pulses_per_tick(countdown, fuse)) % 1.0
     return 1 if phase >= 0.5 else 0
 
 
@@ -117,6 +124,27 @@ def flame_key(level: int, grow: int | str = "steady") -> tuple:
     if level == 0:
         return ("flame", grow)
     return ("flame", "fade", level)
+
+
+def flame_item_key(ticks_left: int, flame_ticks: int, grow: int | str = "steady") -> tuple:
+    """Sprite of one burning cell.
+
+    A cell with more than ``flame_ticks`` ticks left (the burn buff) is an
+    ember flame; once its extra ticks are spent it fades like any flame.
+    """
+    if ticks_left > flame_ticks:
+        return ("flame", "ember", grow)
+    return flame_key(flame_fade_level(ticks_left, flame_ticks), grow)
+
+
+def buff_frame(steps: int, x: int, y: int) -> int:
+    """Bob frame of a floor buff: alternates every tick, from the state only."""
+    return (steps + x + y) % 2
+
+
+def buff_event_cells(state: dict, kind: str) -> list[tuple[int, int]]:
+    """Cells of this tick's events of type ``kind`` (for example ``"buff_picked"``)."""
+    return [(e["x"], e["y"]) for e in state["events"] if e["type"] == kind]
 
 
 def death_frame(t: float) -> int:
@@ -182,6 +210,12 @@ def _gate(state: dict) -> list[Item]:
     return [Item(LAYER_GATE, key, gate["x"] * TILE, gate["y"] * TILE)]
 
 
+def _buff_item(state: dict, buff: dict) -> Item:
+    x, y = buff["x"], buff["y"]
+    return Item(LAYER_BUFF, ("buff", buff["type"], buff_frame(state["steps"], x, y)),
+                x * TILE, y * TILE)
+
+
 def static_scene(state: dict, facings: dict[int, str]) -> list[Item]:
     """The scene exactly as ``state`` is: every object on its cell, nothing in between."""
     items = _tiles(state) + _gate(state)
@@ -189,8 +223,9 @@ def static_scene(state: dict, facings: dict[int, str]) -> list[Item]:
         items.append(Item(LAYER_BOMB, ("bomb", 0), bomb["x"] * TILE, bomb["y"] * TILE))
     flame_ticks = state["rules"]["flame_ticks"]
     for flame in state["flames"]:
-        level = flame_fade_level(flame["ticks_left"], flame_ticks)
-        items.append(Item(LAYER_FLAME, flame_key(level), flame["x"] * TILE, flame["y"] * TILE))
+        key = flame_item_key(flame["ticks_left"], flame_ticks)
+        items.append(Item(LAYER_FLAME, key, flame["x"] * TILE, flame["y"] * TILE))
+    items += [_buff_item(state, buff) for buff in state.get("buffs", ())]
     for c in draw_order(state["characters"]):
         if not c["dead"]:
             facing = facings.get(c["id"], DEFAULT_FACING)
@@ -207,14 +242,16 @@ def scene(prev: dict, cur: dict, t: float, facings: dict[int, str]) -> list[Item
     the two states. Freshly burned cells grow into a steady flame; flames
     still burning from earlier ticks show their fade level the whole tick;
     a flame that went out (in ``prev`` but not ``cur``) is gone from the
-    start. Short effects (crate debris, gate blink, death) end within the
-    tick.
+    start. Short effects (crate debris, gate blink, death, buff pop, sparkle
+    and puff) end within the tick. A buff dropped on this tick pops in: only
+    a burst until ``BUFF_POP[0]``, then the badge.
     """
     t = min(max(t, 0.0), 1.0)
     items = _tiles(cur) + _gate(cur)
 
+    fuse = cur["rules"]["bomb_fuse"]
     for bomb in cur["bombs"]:
-        items.append(Item(LAYER_BOMB, ("bomb", bomb_frame(bomb["countdown"], t)),
+        items.append(Item(LAYER_BOMB, ("bomb", bomb_frame(bomb["countdown"], t, fuse)),
                           bomb["x"] * TILE, bomb["y"] * TILE))
 
     grow = flame_frame(t)
@@ -222,9 +259,15 @@ def scene(prev: dict, cur: dict, t: float, facings: dict[int, str]) -> list[Item
     fresh = set(cur["explosion"])
     for flame in cur["flames"]:
         cell = (flame["x"], flame["y"])
-        level = flame_fade_level(flame["ticks_left"], flame_ticks)
-        key = flame_key(level, grow if cell in fresh else "steady")
+        key = flame_item_key(flame["ticks_left"], flame_ticks,
+                             grow if cell in fresh else "steady")
         items.append(Item(LAYER_FLAME, key, cell[0] * TILE, cell[1] * TILE))
+
+    dropped = set(buff_event_cells(cur, "buff_dropped"))
+    for buff in cur.get("buffs", ()):
+        if (buff["x"], buff["y"]) in dropped and t < BUFF_POP[0]:
+            continue
+        items.append(_buff_item(cur, buff))
 
     if t < CRATE_BREAK_END:
         frame = 0 if t < CRATE_BREAK_SPLIT else 1
@@ -234,6 +277,16 @@ def scene(prev: dict, cur: dict, t: float, facings: dict[int, str]) -> list[Item
             and int(t / GATE_BLINK_END * GATE_BLINKS) % 2 == 0):
         gate = cur["gate"]
         items.append(Item(LAYER_EFFECT, ("gate", "flash", 0), gate["x"] * TILE, gate["y"] * TILE))
+    if t < BUFF_POP[1]:
+        frame = 0 if t < BUFF_POP[0] else 1
+        for x, y in sorted(dropped):
+            items.append(Item(LAYER_EFFECT, ("buff_fx", "pop", frame), x * TILE, y * TILE))
+    for kind, end in (("sparkle", BUFF_SPARKLE_END), ("puff", BUFF_PUFF_END)):
+        if t < end:
+            event = "buff_picked" if kind == "sparkle" else "buff_destroyed"
+            frame = 0 if t < end / 2 else 1
+            for x, y in sorted(set(buff_event_cells(cur, event))):
+                items.append(Item(LAYER_EFFECT, ("buff_fx", kind, frame), x * TILE, y * TILE))
 
     before_by_id = {c["id"]: c for c in prev["characters"]}
     for c in draw_order(cur["characters"]):

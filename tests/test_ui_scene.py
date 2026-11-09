@@ -20,6 +20,7 @@ from ui.scene import (  # noqa: E402
     CRATE_BREAK_END,
     GATE_BLINK_END,
     LAYER_BOMB,
+    LAYER_BUFF,
     LAYER_CHARACTER,
     LAYER_EFFECT,
     LAYER_FLAME,
@@ -77,6 +78,8 @@ class TestStaticScene(unittest.TestCase):
         self.assertEqual(cells(items, LAYER_CHARACTER), sorted((c["x"], c["y"]) for c in alive))
         drawn_ids = [i.key[1] for i in items if i.layer == LAYER_CHARACTER]
         self.assertEqual(sorted(drawn_ids), sorted(c["id"] for c in alive))
+        buffs = sorted((i.x // 16, i.y // 16, i.key[1]) for i in items if i.layer == LAYER_BUFF)
+        self.assertEqual(buffs, sorted((b["x"], b["y"], b["type"]) for b in state["buffs"]))
         gates = [i for i in items if i.layer == LAYER_GATE]
         if state["gate"]["state"] == "hidden":
             self.assertEqual(gates, [])
@@ -85,7 +88,7 @@ class TestStaticScene(unittest.TestCase):
             self.assertEqual(gates[0].key[1], state["gate"]["state"])
 
     def test_matches_state_over_real_games(self):
-        seen_flames = seen_deaths = seen_gate = False
+        seen_flames = seen_deaths = seen_gate = seen_buffs = False
         for seed in range(6):
             for opponents in ("mixed", "random"):
                 pairs = played_transitions(seed, opponents)
@@ -96,7 +99,8 @@ class TestStaticScene(unittest.TestCase):
                     seen_flames |= bool(cur["explosion"])
                     seen_deaths |= any(c["dead"] for c in cur["characters"])
                     seen_gate |= cur["gate"]["state"] != "hidden"
-        self.assertTrue(seen_flames and seen_deaths and seen_gate)
+                    seen_buffs |= bool(cur["buffs"])
+        self.assertTrue(seen_flames and seen_deaths and seen_gate and seen_buffs)
 
     def test_free_world_scene(self):
         session = GameSession(MODE_FREE, seed=9)
@@ -223,14 +227,16 @@ class TestDiffs(unittest.TestCase):
 class TestAnimatedScene(unittest.TestCase):
     def test_end_of_every_tick_matches_the_state(self):
         """The core sync rule: at t = 1 the animation shows exactly ``cur``."""
-        checked = 0
+        checked = with_buffs = 0
         for pairs in real_games():
             facings = initial_facings(pairs[0][0])
             for prev, cur in pairs:
                 facings = update_facings(facings, prev, cur)
                 self.assertEqual(scene(prev, cur, 1.0, facings), static_scene(cur, facings))
                 checked += 1
+                with_buffs += bool(cur["buffs"])
         self.assertGreater(checked, 1000)
+        self.assertGreater(with_buffs, 100)  # buffs on the floor are part of the check
 
     def test_scene_of_unchanged_state_is_static(self):
         session = GameSession(MODE_BOTS, seed=4)

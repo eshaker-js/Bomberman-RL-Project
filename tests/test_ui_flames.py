@@ -112,7 +112,7 @@ class TestFlamesOnScreen(unittest.TestCase):
                     level = flame_fade_level(f["ticks_left"], 4)
                     levels_seen.add(level)
                     expected[(f["x"], f["y"])] = (
-                        ("flame", "steady") if level == 0 else ("flame", "fade", level))
+                        ("flame", "ember", "steady") if f["ticks_left"] > GAME_RULES["flame_ticks"] else ("flame", "steady") if level == 0 else ("flame", "fade", level))
                 self.assertEqual(drawn, expected)
         self.assertEqual(levels_seen, {0, 1, 2, 3})
 
@@ -128,9 +128,9 @@ class TestFlamesOnScreen(unittest.TestCase):
                         cell = (f["x"], f["y"])
                         if cell not in fresh:
                             level = flame_fade_level(f["ticks_left"], 4)
-                            self.assertEqual(drawn[cell], ("flame", "steady") if level == 0 else ("flame", "fade", level))
+                            self.assertEqual(drawn[cell], ("flame", "ember", "steady") if f["ticks_left"] > GAME_RULES["flame_ticks"] else ("flame", "steady") if level == 0 else ("flame", "fade", level))
                         elif t == 0.0:
-                            self.assertEqual(drawn[cell], ("flame", 0))
+                            self.assertEqual(drawn[cell], ("flame", "ember", 0) if f["ticks_left"] > GAME_RULES["flame_ticks"] else ("flame", 0))
 
     def test_expired_flames_vanish_at_tick_start(self):
         found = 0
