@@ -103,6 +103,15 @@ def train(cfg: TabularConfig, seed: int, log: RunLog | None = None) -> tuple[QTa
     """Train for ``cfg.episodes`` episodes. Returns the Q-table and a summary."""
     rng = np.random.default_rng(seed)
     env = TinyStageEnv(cfg)
+    try:
+        return _train(env, cfg, seed, rng, log)
+    finally:
+        env.close()
+
+
+def _train(env: TinyStageEnv, cfg: TabularConfig, seed: int, rng: np.random.Generator,
+           log: RunLog | None) -> tuple[QTable, dict]:
+    """The training loop of ``train`` on an env it owns."""
     env.reset(seed=seed)
     table = QTable()
     counts = {"crate": 0, "death": 0, "timeout": 0}
@@ -146,11 +155,11 @@ def main(argv: list | None = None) -> Path:
     if args.episodes is not None:
         cfg = dataclasses.replace(cfg, episodes=args.episodes)
     run_dir = new_run_dir("tabular", args.seed, args.runs_dir)
-    log = RunLog(run_dir, "tabular", args.seed, config_to_dict(cfg),
-                 argv=sys.argv if argv is None else ["-m", "rl.train_tabular", *argv])
-    table, summary = train(cfg, args.seed, log)
-    table.save(run_dir / "q_table.npz")
-    log.finish(summary)
+    with RunLog(run_dir, "tabular", args.seed, config_to_dict(cfg),
+                argv=sys.argv if argv is None else ["-m", "rl.train_tabular", *argv]) as log:
+        table, summary = train(cfg, args.seed, log)
+        table.save(run_dir / "q_table.npz")
+        log.finish(summary)
     print(f"run folder: {run_dir}")
     print("summary:", summary)
     return run_dir

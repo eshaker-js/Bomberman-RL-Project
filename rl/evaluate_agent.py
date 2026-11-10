@@ -81,6 +81,13 @@ class PPOPolicy:
 
 def evaluate_tiny(policy: TabularPolicy, games: int, max_steps: int) -> dict:
     env = TinyStageEnv(TabularConfig(max_steps=max_steps))
+    try:
+        return _evaluate_tiny(env, policy, games)
+    finally:
+        env.close()
+
+
+def _evaluate_tiny(env: TinyStageEnv, policy: TabularPolicy, games: int) -> dict:
     totals = {"games": games, "crate": 0, "death": 0, "timeout": 0, "steps": 0}
     for _ in range(games):
         env.reset()
@@ -97,6 +104,13 @@ def evaluate_tiny(policy: TabularPolicy, games: int, max_steps: int) -> dict:
 def evaluate_full(policy, opponents: str, games: int, first_seed: int,
                   max_steps: int) -> dict:
     env = BombermanGymEnv(opponents, EnvConfig(max_steps=max_steps))
+    try:
+        return _evaluate_full(env, policy, games, first_seed)
+    finally:
+        env.close()
+
+
+def _evaluate_full(env: BombermanGymEnv, policy, games: int, first_seed: int) -> dict:
     totals = {"games": games, "win": 0, "loss": 0, "draw": 0, "timeout": 0,
               "self_kills": 0, "kills": 0, "crates": 0, "steps": 0}
     for seed in range(first_seed, first_seed + games):
@@ -170,15 +184,15 @@ def main(argv: list | None = None) -> tuple[Path, dict]:
                 "first_seed": args.first_seed, "max_steps": max_steps,
                 "opponents": args.opponents if stage == "full" else None}
     out = new_run_dir(f"eval-{kind}-{stage}", args.first_seed, args.runs_dir)
-    log = RunLog(out, f"eval-{kind}-{stage}", args.first_seed, settings,
-                 argv=sys.argv if argv is None else ["-m", "rl.evaluate_agent", *argv])
-    if stage == "tiny":
-        results = evaluate_tiny(policy, args.games, max_steps)
-    else:
-        results = evaluate_full(policy, args.opponents, args.games, args.first_seed,
-                                max_steps)
-    write_json(out / "eval.json", {"settings": settings, "results": results})
-    log.finish(results)
+    with RunLog(out, f"eval-{kind}-{stage}", args.first_seed, settings,
+                argv=sys.argv if argv is None else ["-m", "rl.evaluate_agent", *argv]) as log:
+        if stage == "tiny":
+            results = evaluate_tiny(policy, args.games, max_steps)
+        else:
+            results = evaluate_full(policy, args.opponents, args.games, args.first_seed,
+                                    max_steps)
+        write_json(out / "eval.json", {"settings": settings, "results": results})
+        log.finish(results)
 
     where = f"vs 3 x {args.opponents}" if stage == "full" else "single-player, fixed map"
     print(f"Evaluated {kind} agent from {run} on the {stage} stage ({where}), "
