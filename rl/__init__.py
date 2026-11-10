@@ -6,6 +6,8 @@
   full game (``GAME_RULES``, random crates) against a chosen opponent level
 - ``rl.tabular_env``: the tiny stage and the tabular state encoding
 - ``rl.train_tabular``: tabular Q-learning (our own code)
+- ``rl.sweep_tabular`` / ``rl.plot_tabular``: hyperparameter sweep of tabular
+  Q-learning over several seeds, and its learning-curve figures (matplotlib)
 - ``rl.networks`` / ``rl.train_ppo``: PPO from Stable-Baselines3 with a small CNN
 - ``rl.evaluate_agent``: evaluates a saved tabular or PPO agent
 - ``rl.run_logging``: one new ``runs/`` folder per run (config, seed, commit,
@@ -19,6 +21,8 @@ Install (CPU-only torch first, then the rest)::
 Run from the repository root::
 
     python -m rl.train_tabular --episodes 3000 --seed 0
+    python -m rl.sweep_tabular --seeds 5
+    python -m rl.plot_tabular runs/<sweep folder>
     python -m rl.train_ppo --timesteps 10000 --seed 0
     python -m rl.evaluate_agent --run runs/<run folder>
     python -m rl.evaluate_agent --run runs/<run folder> --stage full --opponents noisy25

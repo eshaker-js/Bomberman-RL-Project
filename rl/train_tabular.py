@@ -26,6 +26,7 @@ then stays at ``epsilon_end``. Greedy ties are broken by the seeded RNG.
 import argparse
 import dataclasses
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -99,18 +100,30 @@ def epsilon_at(episode: int, cfg: TabularConfig) -> float:
     return cfg.epsilon_start + (cfg.epsilon_end - cfg.epsilon_start) * episode / decay
 
 
-def train(cfg: TabularConfig, seed: int, log: RunLog | None = None) -> tuple[QTable, dict]:
-    """Train for ``cfg.episodes`` episodes. Returns the Q-table and a summary."""
+# Called after every episode with (episode index, Q-table so far). It must
+# not change the table; it may read it, e.g. to evaluate the greedy policy.
+EpisodeHook = Callable[[int, "QTable"], None]
+
+
+def train(cfg: TabularConfig, seed: int, log: RunLog | None = None,
+          on_episode_end: EpisodeHook | None = None) -> tuple[QTable, dict]:
+    """Train for ``cfg.episodes`` episodes. Returns the Q-table and a summary.
+
+    ``on_episode_end`` (optional) is called after each episode with the
+    episode index and the table. It does not touch the training RNG, so a
+    run with a hook learns exactly the same table as a run without one.
+    """
     rng = np.random.default_rng(seed)
     env = TinyStageEnv(cfg)
     try:
-        return _train(env, cfg, seed, rng, log)
+        return _train(env, cfg, seed, rng, log, on_episode_end)
     finally:
         env.close()
 
 
 def _train(env: TinyStageEnv, cfg: TabularConfig, seed: int, rng: np.random.Generator,
-           log: RunLog | None) -> tuple[QTable, dict]:
+           log: RunLog | None,
+           on_episode_end: EpisodeHook | None = None) -> tuple[QTable, dict]:
     """The training loop of ``train`` on an env it owns."""
     env.reset(seed=seed)
     table = QTable()
@@ -136,6 +149,8 @@ def _train(env: TinyStageEnv, cfg: TabularConfig, seed: int, rng: np.random.Gene
             log.metric({"episode": episode, "return": round(total, 6),
                         "length": info["steps"], "result": info["result"],
                         "epsilon": round(epsilon, 6), "states": len(table)})
+        if on_episode_end is not None:
+            on_episode_end(episode, table)
     summary = {"episodes": cfg.episodes, "states_visited": len(table), **counts,
                "last100_crate_rate": last.count("crate") / max(len(last), 1)}
     return table, summary

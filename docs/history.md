@@ -2,6 +2,112 @@
 
 ## Next History entry goes here so older entries get pushed down, newest is on top.
 
+## 2026-11-10 Stage 2, part 1: tabular Q-learning experiments on the tiny stage
+
+**Author:** Joelle  
+**Commits:** `b3202a3` (sweep, plots, tests) + the commit that adds this entry and `docs/EXPERIMENTS.md`  
+**Tests:** 472 passing (457 before + 15 new in `tests/test_sweep_tabular.py`)
+
+### Start here (the short version)
+* **The tabular half of stage 2 is done:** Q-learning on the tiny stage, 4 hyperparameters, 5 to 20 seeds each, plus a confirmation on 20 seeds never used for tuning
+* **Main result:** alpha = 1.0 learns about **twice as fast** as v0 (alpha = 0.1) and always finds the shortest route. Confirmed on seeds 100 to 119: faster on 19 of 20 seeds (sign test p = 0.00004)
+* **The tabular agent fails completely on the full game** (0% wins, about 90% self-kills): its state cannot see crates or opponents. This is our argument for PPO
+* **The PPO half of stage 2 is not started** and needs an owner
+* All runs are on commit `b3202a3` with a clean working tree, logged in `docs/EXPERIMENTS.md`
+
+### What I did
+* `rl/sweep_tabular.py`: runs a hyperparameter sweep over several seeds and writes summary tables
+* `rl/plot_tabular.py`: one learning-curve figure per parameter
+* `tests/test_sweep_tabular.py`: 15 tests
+* `experiments/tabular/`: the plan files of the alpha and confirmation runs
+* `rl/train_tabular.py` (Basel's file): an optional `on_episode_end` hook so the sweep can test the agent during training. Training itself is unchanged, a test checks the Q-table is identical with and without the hook
+* `requirements.txt`: added `matplotlib` (only needed for the figures)
+
+### How it works
+* `python -m rl.sweep_tabular` runs the default plan with 5 seeds. `--plan experiments/tabular/alpha.json --seeds 20` runs another plan
+* **One parameter at a time:** every config is v0 with exactly one value changed. v0 itself runs once per seed and is shared by all groups (13 configs, not 16)
+* Every 50 episodes the **greedy** policy (no exploration) plays one game. `learned_at` = the first checkpoint from which every later one succeeds
+* Why greedy and not training success: with `epsilon_end = 0.05`, training success stays around 90% even when the policy is already perfect
+* `optimal` = the agent takes the fewest steps possible. That minimum (7 steps) is not assumed: `shortest_solution` finds it by a breadth-first search over every action sequence, directly on the engine
+* Every run is a normal tabular run folder inside one sweep folder, plus `plan.json`, `summary.csv`, `checkpoints.csv` and `aggregate.csv`
+* `python -m rl.plot_tabular runs/<sweep folder>` writes `plots/<param>.png`: left the share of seeds whose greedy policy solves the stage, right the training success (moving average, mean and std over seeds)
+
+### Results
+Main sweep, 5 seeds (`learned_at` = mean and std over seeds, lower is faster):
+
+| Parameter | Value | Solved | Optimal | learned_at |
+|---|---|---|---|---|
+| alpha | 0.01 / 0.05 / **0.1 (v0)** / 0.3 / 0.5 / 1.0 | all 5/5 | 5, 5, 4, 3, 5, 5 | 2430, 1280, 970, 640, 790, **540** |
+| gamma | 0.5 / 0.9 / 0.95 / **0.99 (v0)** | all 5/5 | 5, 5, 3, 4 | 1130, 990, 980, 970 |
+| epsilon_decay_fraction | 0.2 / 0.5 / **0.8 (v0)** | all 5/5 | **1**, 4, 4 | **530**, 840, 970 |
+| episodes | 300 / 1000 / **3000 (v0)** | **0/5**, 5/5, 5/5 | 0, 2, 4 | n/a, 730, 970 |
+
+Alpha with 20 seeds: 0.01: 2462, 0.05: 1335, 0.1: 1008, 0.3: 662, 0.5: 710, 1.0: 582. Optimal route 20/20 only for 0.5 and 1.0
+
+Confirmation on new seeds 100 to 119:
+
+| | v0 (alpha 0.1) | Tuned (alpha 1.0) |
+|---|---|---|
+| learned_at | 998 +- 170 | **495 +- 203** |
+| Optimal route | 15/20 | **20/20** |
+| Faster on the same seed | | **19 of 20** (p = 0.00004) |
+
+v0 agent (seed 0) on the full game, 100 games each:
+
+| Opponents | Win | Draw | Loss | Timeout | Self-kill |
+|---|---|---|---|---|---|
+| 3 random | 0% | 5% | 89% | 6% | 94% |
+| 3 noisy25 | 0% | 0% | 97% | 3% | 89% |
+| 3 rule | 0% | 0% | 100% | 0% | 91% |
+
+### What we learned
+* **alpha has the largest effect.** 0.1 and below are clearly slower. From 0.3 up it is a plateau within the noise, even with 20 seeds
+* **alpha = 1.0 works because the tiny stage is deterministic:** the same action in the same state always gives the same result, so there is no noise to average. This should not carry over to the full game
+* **gamma barely matters** because an episode is only about 7 steps long
+* **Exploration vs exploitation:** faster epsilon decay learns sooner (530) but only 1 of 5 seeds found the optimal route
+* **300 episodes are not enough.** But episodes and the epsilon schedule are coupled (epsilon decays over a fraction of the episodes), so 1000 vs 3000 mostly measures the schedule
+* **Q-learning is off-policy:** the greedy policy solves the stage long before training success rises, because the agent is still exploring
+* **Why tabular fails on the full game:** it memorised one route for the fixed map. On random maps the crate it expects is not there and it walks back into its own fire. Its state has no crates, opponents or other bombs, and a table cannot hold the full observation, so the full game needs function approximation (PPO)
+
+### Decisions I made
+
+- **Measure learning with the greedy policy at checkpoints**
+  - Why: training success is capped by exploration (epsilon 0.05), so it never shows when the policy is learned
+  - Alternatives considered: 90% training success over 100 episodes (v0 only reached 83%)
+  - Status: provisional (needs team OK)
+
+- **One parameter at a time, v0 shared**
+  - Why: every difference comes from one value, 13 configs instead of a 216 config grid
+  - Alternatives considered: a full grid (misses nothing, but 16 times more runs and harder to read)
+  - Status: provisional (needs team OK)
+
+- **Confirm on seeds never used for tuning (100 to 119)**
+  - Why: choosing and confirming on the same seeds would overstate the gain
+  - Status: provisional (needs team OK)
+
+- **Tuned tiny-stage config: alpha = 1.0, everything else v0**
+  - Why: fastest, optimal route on every seed, and a single change keeps the comparison clean
+  - Alternatives considered: alpha 1.0 with epsilon decay 0.5 (faster maybe, but never tested together)
+  - Status: provisional. `TabularConfig` in `rl/config.py` is unchanged, it is the team's call whether v0 should become 1.0
+
+- **matplotlib in requirements.txt**
+  - Why: the figures for the report. Only `rl.plot_tabular` imports it, its test skips without it
+  - Status: provisional (needs team OK)
+
+### AI-assisted parts
+* Claude wrote the sweep, plot and test code and the hook, checked the 7-step optimum by exhaustive search, and checked that the results are identical on two different machines
+* I chose the tuned config, ran every experiment on my machine, and committed
+
+### Open questions for the team
+* **Who takes PPO?** The M1 done-criterion (a trained agent beats random bots over 3 seeds) can only be reached with PPO
+* OK to add `matplotlib`?
+* **Small bug in `new_run_dir`:** folders are named by the second, so two runs of the same kind and seed started in the same second crash with `FileExistsError` (happened with `evaluate_agent` run twice quickly). The sweep avoids it with subfolders. Possible fix: add milliseconds or a counter
+* The epsilon schedule depends on the episode count. Should it decay over a fixed number of episodes instead?
+* Should the v0 tabular alpha become 1.0?
+
+### Next task for whoever picks this up
+**Stage 2, part 2: PPO.** First measure how long PPO training takes on your machine with a short run, then train PPO against `random` with several seeds, find how many steps and which settings it needs before it stops just waiting, evaluate on unseen seeds, log in `docs/EXPERIMENTS.md`, and climb the ladder. `rl/sweep_tabular.py` shows a pattern for running seeds and summarising them.
+
 ## 2026-11-10 Buffs, fuse 4 everywhere, last items of stage 1 of the project (Task 7)
 
 **Author:** Basel Swaid  
