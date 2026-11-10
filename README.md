@@ -2,7 +2,6 @@
 
 A Bomberman-style game built for our Reinforcement Learning course project, plus the tools to train an RL agent on it. The game is turn-based underneath: every character makes one move per tick. The rules engine (`game/environment.py`) runs without any window, so an agent can play thousands of games fast, while the retro game window (`ui/`) lets humans play the same rules in real time.
 
-There is no trained agent yet. The Gym wrapper and training code are the next milestone.
 
 ## Install
 
