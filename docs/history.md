@@ -2,6 +2,134 @@
 
 ## Next History entry goes here so older entries get pushed down, newest is on top.
 
+## 2026-11-10 Buffs, fuse 4 everywhere, last items of stage 1 of the project (Task 7)
+
+**Author:** Basel Swaid  
+**Commits:** `818911c` (part 1 engine) `9078cc6` (part 2 bots and evaluation) `596c1fa` (part 2b bot fix) `417b2ac` (part 3 observation and reward) `43eaef4` (part 4 UI) `2826b73` (part 5 README) `2ad685c` (part 6 Windows fix) `d6c25de` (merge PR #8) 
+**Tests:** 457 passing (353 before + 104 new)
+
+### Start here (the short version)
+* **Stage 1 of the project is finished.** Everything is set up for training
+* **The game is now fuse 4 everywhere:** humans in the UI, the bots, the evaluation and the agent all play the exact same rules
+* **Three buffs:** bigger blast (range), extra bomb, and burn (fire that lasts longer around the bomb). Speed was dropped
+* The rule bot understands buffs, the agent's observation shows them, and the UI draws them
+* Old saved PPO models no longer load (the observation changed). They were only smoke runs anyway
+* **Install the RL packages** (`pip install -r requirements.txt`), otherwise 72+ tests are skipped and you aren't really testing the RL code
+
+### The rules now
+* `GAME_RULES` = fuse **4**, flames **4**, buffs on. The engine defaults (fuse 4, flames 1, no buffs) didn't change, so the old tests still describe the original game
+* Games stop at **800 steps** in both training and evaluation (evaluation used 400 before)
+* With buffs off the engine plays **exactly** like before (checked on 20,000 random games against the old engine)
+
+### Part 1: buffs in the engine
+* All buff numbers live in **one place**, `BUFF_RULES` in `game/environment.py` (v0):
+
+  | Buff | Effect per pickup | Start | Max | Drop chance |
+  |---|---|---|---|---|
+  | Range | +1 blast range | 2 | 5 | 15% |
+  | Extra bomb | +1 bomb at the same time | 1 | 3 | 15% |
+  | Burn | +1 burn level | 0 | 2 | 10% |
+
+* **Burn:** level 1 = the bomb's cell and 1 tile each way burn **5** ticks, level 2 = 2 tiles each way burn **6** ticks. The rest of the blast burns the normal 4. It never goes past the blast
+* **Drops:** each destroyed crate rolls once (40% total, about 6 to 7 buffs per game). The gate crate never drops. Drops use their **own random stream**, so a seed still gives exactly the same crates
+* **Pickup:** walk onto it. If two characters land on it together, a random one gets it (not the lowest id, that would always favour our agent)
+* A fresh blast destroys buffs on the floor, but not the ones it just dropped. Lingering flames don't destroy buffs
+* **Each bomb remembers** the range and burn its owner had when placing it
+* A fresh blast never shortens a cell that is already burning longer
+* New: `state["buffs"]`, `state["buff_rules"]`, each character's levels and bombs left, each bomb's range and burn, and the events `buff_dropped`, `buff_picked`, `buff_destroyed`
+* `start_buffs` lets a game start with characters already buffed (used by the measurement tool, maybe useful for curriculum later)
+
+### Part 2: bots and evaluation
+* **Rule bot**: reads each bomb's own range and burn, handles several bombs, and only places a second bomb if it can still escape everything
+* **A bug the builder found (part 2b):** when ranges were different, the bot thought an opponent's *possible* bomb would stop its own longer blast, so it walked into its own fire. Fixed, with a test. Without buffs the bot plays exactly as before (240 of 240 games identical)
+* New tool `agents/buff_eval.py`: the rule bot starts with a buff against 3 rule bots or 3 `noisy25` bots, and reports wins, survival, kills and self-kills
+* **The ladder still gets harder level by level** (200 games each, final code):
+
+  | Level | Win as agent vs 3 random | Rule bot's win vs 3 of this level |
+  |---|---|---|
+  | random | 0% | 100% |
+  | noisy50 | 0.5% | 99.5% |
+  | noisy25 | 19% | 99% |
+  | noisy10 | 52% | 94% |
+  | rule | 100% | 1% (73% timeouts) |
+
+  The noisy levels are much weaker as agents with fuse 4 than with fuse 9 (noisy25 was 59.5%)
+
+### Part 3: what the agent sees and gets
+* The observation now has **20 layers** (was 10). New: each bomb's range and burn, buffs on the floor (one layer per type), my bombs left, my range, my burn, and each opponent's range, bombs left and burn. Everything stays between 0 and 1
+* The agent still has **6 actions**
+* New reward term `buff` for picking up a buff, only when it really raises a level. **v0 = 0** (off)
+* The tabular tiny stage stays without buffs
+
+### Part 4: UI
+* Three original buff icons that bob on the floor, a pop when they drop, a sparkle when picked up, a puff when destroyed
+* Cells burning longer than normal are drawn as **pink embers**
+* The side panel shows each character's levels as pips
+* Buffs are drawn above flames, otherwise a fresh drop would be hidden under its own crate's fire
+
+### Part 5 and 6: README and a Windows fix
+* README: a new section with the `rl/` commands and the buff rules, plus the sentences that became false (fuse 9, one bomb)
+* **Windows bug (from Task 6):** the PPO script never closed its `progress.csv`, and Windows can't delete an open file, so 2 tests failed on Windows only. Now every log file and training env is closed, even if a run crashes. 5 new tests check it
+
+### Decisions I made
+
+- **Fuse 4 everywhere**
+  - Why: the bomb reward arrives 4 ticks after placing instead of 9, so the agent learns faster, and one rule set means the agent never plays different rules than it trained on
+  - Alternatives considered: fuse 9 for humans and 4 for training (the agent would misjudge bombs in the real game)
+  - Status: provisional (needs team OK)
+
+- **Keep the 800 step limit, also in evaluation**
+  - Why: better a long game than cutting one off early
+  - Status: provisional (needs team OK)
+
+- **Three buffs, speed dropped**
+  - Why: speed changes how movement works and brought too many edge cases (two moves per tick, fire on the middle tile, 22 actions). Range, extra bomb and burn only touch bombs
+  - Alternatives considered: speed as 2 moves per tick
+  - Status: provisional (needs team OK), speed can come back later as an extra
+
+- **Burn 5 then 6 ticks**
+  - Why: 8 ticks would trap the agent in its own fire a lot early in training
+  - Alternatives considered: 6 then 8 ticks
+  - Status: provisional (needs team OK)
+
+- **Drop rates 15% / 15% / 10%**
+  - Why: about 6 to 7 buffs per game, more chaotic
+  - Status: provisional, to decide again with the trained agent
+
+- **Random tie when two characters take the same buff**
+  - Why: lowest id would always favour our agent
+  - Status: provisional (needs team OK)
+
+- **Buff reward off (0) for now**
+  - Why: first see if the agent picks buffs up on its own
+  - Status: provisional (needs team OK)
+
+### ANY OBJECTIONS ON:
+* Fuse 4 everywhere and the 800 step limit
+* The three buffs and their numbers in `BUFF_RULES`
+* Dropping speed
+* The 20 observation layers
+
+### AI-assisted parts
+* Claude Code wrote all the code and the 104 new tests
+* The Claude supervisor wrote the spec, reviewed the plan, and verified the result on its own:
+  * the engine with buffs off against the old engine on 20,000 random games
+  * its own model of the blast and buff rules compared step by step over 9,000 random games
+  * the drop rates and the random tie
+  * the observation and reward against its own version on 400 games from all 4 points of view
+  * the ladder re-run on the final code
+  * the new tests really fail without the Windows fix
+* I made the design calls (fuse, buffs, burn, drop rates), and applied and merged the code
+
+### Open questions for the team
+* **Extra bomb max 2 or 3?** With fuse 4 you need a new cell for every bomb, so you can place one at most every other tick, and your first bomb explodes 4 ticks after you placed it. A third bomb can only go down on the tick your first one explodes, so level 3 almost does nothing
+* **Drop rates:** the buff measurement only measures our simple bot (it can't escape long blasts and almost never uses a second bomb). Decide with the trained agent
+* README line 5 still says there's no training code
+
+### Next task for whoever picks this up
+
+**Stage 2 of the project: the first real training runs.** Everything is ready. The idea is to show that our setup actually learns something before trying anything fancy: tabular Q-learning on the tiny stage, and PPO against the easiest opponents first, each with several seeds, evaluated on games it never trained on and logged in `docs/EXPERIMENTS.md`. Expect the first PPO runs to learn to just wait (that's what the smoke runs did), so a big part of this task is finding out how many steps and which settings it needs before it starts bombing crates and surviving. Then climb the ladder.
+
 ## 2026-11-05 Stage 1 of the project setup: evaluation, opponent ladder, Gym wrapper, training scripts (Task 6)
 
 **Author:** Basel Swaid  
