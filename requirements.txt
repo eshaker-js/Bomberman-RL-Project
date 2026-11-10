@@ -4,3 +4,5 @@ gymnasium>=1.2.0
 # CPU-only torch (no CUDA needed): first `pip install torch --index-url https://download.pytorch.org/whl/cpu`, then `pip install -r requirements.txt`
 torch>=2.5.0
 stable-baselines3>=2.8.0
+# Only for the figures of rl.plot_tabular
+matplotlib>=3.8.0
