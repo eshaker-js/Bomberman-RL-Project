@@ -436,6 +436,229 @@ ICON_BOMB = (
 # The same icon, dimmed, for a character whose bomb is on the board.
 ICON_BOMB_ARMED = apply_colors(ICON_BOMB, {"a": "5", "4": "5", "1": "5", "0": "5"})
 
+# The same flame shapes in darker ember colours: a cell whose fire outlasts
+# ``flame_ticks`` (the burn buff) is drawn with these while its extra ticks
+# last, so a player can see where the fire will stay longer.
+EMBER_COLORS = {"7": "e", "a": "8", "9": "2", "8": "0"}
+EMBER_FRAMES = tuple(apply_colors(rows, EMBER_COLORS) for rows in FLAME_FRAMES)
+
+# -------------------------------------------------------------------- buffs
+# A buff lies on the floor as a round badge with a black rim (readable on the
+# grey floor), each in its own colour with its own symbol: blue with a
+# four-way arrow (range), green with a bomb and a plus (extra bomb), red with
+# a flame (burn). Frame 1 is the same badge one pixel higher: buffs bob once
+# per tick.
+
+BUFF_RANGE = (
+    "................",
+    "....00000000....",
+    "...0111111110...",
+    "..01cccccccc10..",
+    ".01cccc77cccc10.",
+    ".01ccc7777ccc10.",
+    ".01cc7c77c7cc10.",
+    ".01c77777777c10.",
+    ".01c77777777c10.",
+    ".01cc7c77c7cc10.",
+    ".01ccc7777ccc10.",
+    ".01cccc77cccc10.",
+    "..01cccccccc10..",
+    "...0111111110...",
+    "....00000000....",
+    "................",
+)
+
+BUFF_BOMB = (
+    "................",
+    "....00000000....",
+    "...0333333330...",
+    "..03bbbbbbbb30..",
+    ".03bb7bbbbabb30.",
+    ".03b777bb4bbb30.",
+    ".03bb7b0000bb30.",
+    ".03bbb000000b30.",
+    ".03bbb070000b30.",
+    ".03bbb000000b30.",
+    ".03bbbb0000bb30.",
+    ".03bbbbbbbbbb30.",
+    "..03bbbbbbbb30..",
+    "...0333333330...",
+    "....00000000....",
+    "................",
+)
+
+BUFF_BURN = (
+    "................",
+    "....00000000....",
+    "...0222222220...",
+    "..028888888820..",
+    ".028888a8888820.",
+    ".02888aa8a88820.",
+    ".02888a9aa88820.",
+    ".0288a99a9a8820.",
+    ".0288a9799a8820.",
+    ".0288a9779a8820.",
+    ".02888a77a88820.",
+    ".028888aa888820.",
+    "..028888888820..",
+    "...0222222220...",
+    "....00000000....",
+    "................",
+)
+
+
+def _raised(rows: tuple[str, ...]) -> tuple[str, ...]:
+    """``rows`` one pixel higher (the top row must be empty)."""
+    return rows[1:] + (TRANSPARENT * len(rows[0]),)
+
+
+BUFF_ICONS = {"range": BUFF_RANGE, "bomb_count": BUFF_BOMB, "burn": BUFF_BURN}
+BUFF_FRAMES = {kind: (rows, _raised(rows)) for kind, rows in BUFF_ICONS.items()}
+
+# Effects, drawn over the cell for part of one tick: a white burst while a
+# dropped buff pops in, a yellow sparkle when it is picked up, a grey puff
+# when a blast destroys it.
+BUFF_POP = (
+    (
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......7..7......",
+        ".......77.......",
+        "......7777......",
+        "......7777......",
+        ".......77.......",
+        "......7..7......",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+    ),
+    (
+        "................",
+        "................",
+        "...7........7...",
+        "....7......7....",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "....7......7....",
+        "...7........7...",
+        "................",
+        "................",
+    ),
+)
+
+BUFF_SPARKLE = (
+    (
+        "................",
+        ".......a........",
+        ".......a........",
+        "................",
+        "..a....7....a...",
+        "...a..777..a....",
+        "......777.......",
+        ".aa..77777..aa..",
+        "......777.......",
+        "...a..777..a....",
+        "..a....7....a...",
+        "................",
+        ".......a........",
+        ".......a........",
+        "................",
+        "................",
+    ),
+    (
+        ".......7........",
+        "................",
+        ".a...........a..",
+        "................",
+        "................",
+        ".......a........",
+        "................",
+        "7.....a.a.....7.",
+        "................",
+        ".......a........",
+        "................",
+        "................",
+        ".a...........a..",
+        "................",
+        ".......7........",
+        "................",
+    ),
+)
+
+BUFF_PUFF = (
+    (
+        "................",
+        "................",
+        "................",
+        ".....666666.....",
+        "...6666666666...",
+        "..666655556666..",
+        "..665555555566..",
+        ".66655555555666.",
+        ".66655555555666.",
+        "..665555555566..",
+        "..666655556666..",
+        "...6666666666...",
+        ".....666666.....",
+        "................",
+        "................",
+        "................",
+    ),
+    (
+        "..66........66..",
+        ".6556......6556.",
+        ".6556......6556.",
+        "..66........66..",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "..66........66..",
+        ".6556......6556.",
+        ".6556......6556.",
+        "..66........66..",
+    ),
+)
+BUFF_EFFECTS = {"pop": BUFF_POP, "sparkle": BUFF_SPARKLE, "puff": BUFF_PUFF}
+
+# ------------------------------------------------------------- panel icons
+
+ICON_RANGE = (
+    "...c...",
+    "..ccc..",
+    ".c.c.c.",
+    "ccccccc",
+    ".c.c.c.",
+    "..ccc..",
+    "...c...",
+)
+ICON_BURN = (
+    "...a...",
+    "..aa.a.",
+    "..a9aa.",
+    ".a999a.",
+    ".a989a.",
+    ".a989a.",
+    "..aaa..",
+)
+# Panel icon of each buff, next to its level pips.
+BUFF_PANEL_ICONS = {"range": ICON_RANGE, "bomb_count": ICON_BOMB, "burn": ICON_BURN}
+
 TILE_SPRITES = {
     "floor": FLOOR,
     "wall": WALL,
@@ -454,6 +677,11 @@ def all_tile_sprites() -> dict[str, tuple[str, ...]]:
     sprites["gate_flash"] = GATE_FLASH
     sprites.update({f"crate_break{i}": rows for i, rows in enumerate(CRATE_BREAK)})
     sprites.update({f"gate_open{i}": rows for i, rows in enumerate(GATE_OPEN_FRAMES)})
+    sprites.update({f"ember{i}": rows for i, rows in enumerate(EMBER_FRAMES)})
+    for kind, frames in BUFF_FRAMES.items():
+        sprites.update({f"buff_{kind}{i}": rows for i, rows in enumerate(frames)})
+    for kind, frames in BUFF_EFFECTS.items():
+        sprites.update({f"buff_{kind}{i}": rows for i, rows in enumerate(frames)})
     return sprites
 
 
@@ -467,3 +695,5 @@ def validate_all() -> None:
         validate(f"death{i}", rows, (TILE, TILE), allow_placeholders=True)
     validate("icon_bomb", ICON_BOMB)
     validate("icon_bomb_armed", ICON_BOMB_ARMED)
+    validate("icon_range", ICON_RANGE, (7, 7))
+    validate("icon_burn", ICON_BURN, (7, 7))

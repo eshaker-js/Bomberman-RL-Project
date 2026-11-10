@@ -30,6 +30,13 @@ CARD_GAP = 2
 INFO_Y = PANEL_Y + 126
 BANNER_Y = PANEL_Y + 152
 OUTCOME_TEXT = {"win": "WIN!", "loss": "LOSS", "draw": "DRAW"}
+# Level pips on a character card: one 3x3 square per level up to the max,
+# lit in the buff's colour up to the character's level.
+PIP_SIZE = 3
+PIP_STEP = 4
+PIP_COLOR = {"range": pal.BLUE, "bomb_count": pal.YELLOW, "burn": pal.ORANGE}
+# Card rows of buff levels: (y offset in the card, [(buff, x offset), ...]).
+CARD_LEVEL_ROWS = ((10, (("range", 0), ("burn", 31))), (17, (("bomb_count", 0),)))
 OUTCOME_COLOR = {"win": pal.GREEN, "loss": pal.RED, "draw": pal.ORANGE}
 
 
@@ -58,7 +65,8 @@ def draw_panel(canvas, sprites: Sprites, session, state: dict) -> None:
     for i, character in enumerate(state["characters"]):
         y = PANEL_Y + 11 + i * (CARD_H + CARD_GAP)
         _draw_card(canvas, sprites, session.label(character["id"]), character,
-                   character["id"] not in bomb_owners, PANEL_X + 3, y)
+                   character["id"] not in bomb_owners, PANEL_X + 3, y,
+                   state.get("buff_rules"))
 
     x = PANEL_X + 4
     draw_text(canvas, f"TICK {state['steps']}", x, INFO_Y, pal.WHITE)
@@ -75,7 +83,8 @@ def draw_panel(canvas, sprites: Sprites, session, state: dict) -> None:
 
 
 def _draw_card(canvas, sprites: Sprites, label: str, character: dict,
-               bomb_ready: bool, x: int, y: int) -> None:
+               bomb_ready: bool, x: int, y: int, buff_rules: dict | None = None) -> None:
+    """One character's card. With buffs: its levels as pips; without: ALIVE and READY."""
     dead = character["dead"]
     border = pal.DARK_GREY if dead else _card_color(character["id"])
     frame_rect(canvas, (x, y, PANEL_W - 6, CARD_H), pal.BLACK, border)
@@ -85,10 +94,34 @@ def _draw_card(canvas, sprites: Sprites, label: str, character: dict,
     if dead:
         draw_text(canvas, "DEAD", tx, y + 10, pal.RED)
         return
+    if buff_rules is not None and "bombs_left" in character:
+        _draw_levels(canvas, sprites, character, buff_rules, tx, y)
+        return
     draw_text(canvas, "ALIVE", tx, y + 10, pal.GREEN)
     canvas.blit(sprites.get(("icon", "bomb", bomb_ready)), (tx, y + 17))
     draw_text(canvas, "READY" if bomb_ready else "ARMED", tx + 9, y + 18,
               pal.YELLOW if bomb_ready else pal.DARK_GREY)
+
+
+def _draw_levels(canvas, sprites: Sprites, character: dict, buff_rules: dict,
+                 tx: int, y: int) -> None:
+    """Icon and level pips of every buff; the bomb icon dims with no bomb left."""
+    for dy, entries in CARD_LEVEL_ROWS:
+        for name, dx in entries:
+            if name not in buff_rules:
+                continue
+            lit = character["bombs_left"] > 0 if name == "bomb_count" else True
+            icon = "bomb" if name == "bomb_count" else name
+            canvas.blit(sprites.get(("icon", icon, lit)), (tx + dx, y + dy))
+            for level in range(1, buff_rules[name]["max"] + 1):
+                color = PIP_COLOR[name] if level <= character[name] else pal.DARK_GREY
+                px = tx + dx + 9 + (level - 1) * PIP_STEP
+                canvas.fill(rgb(color), (px, y + dy + 2, PIP_SIZE, PIP_SIZE))
+
+
+def level_pips(character: dict, buff_rules: dict, name: str) -> list[bool]:
+    """Which pips of buff ``name`` are lit, from level 1 to its max."""
+    return [level <= character[name] for level in range(1, buff_rules[name]["max"] + 1)]
 
 
 def _card_color(character_id: int) -> int:

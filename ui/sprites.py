@@ -23,12 +23,15 @@ class Sprites:
     - ``("tile", "floor" | "wall" | "crate")``
     - ``("bomb", frame)``
     - ``("flame", 0 | 1 | "steady")`` and ``("flame", "fade", level)``
+    - ``("flame", "ember", 0 | 1 | "steady")`` for fire that outlasts ``flame_ticks``
+    - ``("buff", type, frame)`` for a floor buff (frame 1 is one pixel higher)
+    - ``("buff_fx", "pop" | "sparkle" | "puff", frame)`` for buff effects
     - ``("debris", frame)`` for a crate breaking
     - ``("gate", "closed", 0)``, ``("gate", "open", frame)``, ``("gate", "flash", 0)``
     - ``("char", id, facing, frame)`` with facing down, up, left or right
     - ``("death", id, frame)``
     - ``("portrait", id, dead)``
-    - ``("icon", "bomb", ready)``
+    - ``("icon", "bomb" | "range" | "burn", lit)`` for the side panel
     """
 
     def __init__(self) -> None:
@@ -51,6 +54,9 @@ class Sprites:
         if kind == "flame":
             if key[1] == "fade":
                 return surface_from_rows(art.flame_fade(key[2]))
+            if key[1] == "ember":
+                frame = 2 if key[2] == "steady" else key[2]
+                return surface_from_rows(art.EMBER_FRAMES[frame])
             frame = key[1]
             return surface_from_rows(art.FLAME_STEADY if frame == "steady" else art.FLAME_FRAMES[frame])
         if kind == "debris":
@@ -72,8 +78,16 @@ class Sprites:
             _, character_id, dead = key
             colors = art.DEAD_COLORS if dead else art.CHARACTER_COLORS[character_id]
             return self._character(colors, "down", 0)
+        if kind == "buff":
+            return surface_from_rows(art.BUFF_FRAMES[key[1]][key[2]])
+        if kind == "buff_fx":
+            return surface_from_rows(art.BUFF_EFFECTS[key[1]][key[2]])
         if kind == "icon":
-            return surface_from_rows(art.ICON_BOMB if key[2] else art.ICON_BOMB_ARMED)
+            if key[1] == "bomb":
+                return surface_from_rows(art.ICON_BOMB if key[2] else art.ICON_BOMB_ARMED)
+            rows = art.BUFF_PANEL_ICONS[key[1]]
+            return surface_from_rows(rows if key[2] else art.apply_colors(
+                rows, {ch: "5" for ch in "0123456789abcdef"}))
         raise KeyError(f"unknown sprite key {key!r}")
 
     @staticmethod

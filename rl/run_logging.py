@@ -70,7 +70,12 @@ def write_json(path: Path, data) -> None:
 
 
 class RunLog:
-    """Writes ``config.json``, ``meta.json`` and ``metrics.csv`` of one run folder."""
+    """Writes ``config.json``, ``meta.json`` and ``metrics.csv`` of one run folder.
+
+    Use it as a context manager (``with RunLog(...) as log:``) so that
+    ``metrics.csv`` is closed even if the run fails before ``finish``: an
+    open file cannot be deleted on Windows.
+    """
 
     def __init__(self, run_dir: Path, kind: str, seed: int, config: dict,
                  argv: list | None = None) -> None:
@@ -98,10 +103,20 @@ class RunLog:
             self._writer.writeheader()
         self._writer.writerow(row)
 
-    def finish(self, summary: dict) -> None:
-        """Close ``metrics.csv`` and record the finish time and summary in ``meta.json``."""
+    def close(self) -> None:
+        """Close ``metrics.csv`` if it is open. Safe to call more than once."""
         if self._csv is not None:
             self._csv.close()
+
+    def __enter__(self) -> "RunLog":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+    def finish(self, summary: dict) -> None:
+        """Close ``metrics.csv`` and record the finish time and summary in ``meta.json``."""
+        self.close()
         self.meta["finished_at"] = utc_now()
         self.meta["summary"] = summary
         write_json(self.dir / "meta.json", self.meta)

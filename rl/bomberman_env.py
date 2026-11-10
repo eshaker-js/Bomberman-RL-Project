@@ -43,7 +43,7 @@ from rl.observation import OBS_SHAPE, encode_observation
 ACTIONS = tuple(Action)
 MOVE_ACTIONS = frozenset({Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT})
 
-REWARD_TERMS = ("outcome", "kill", "crate", "per_step", "bump")
+REWARD_TERMS = ("outcome", "kill", "crate", "per_step", "bump", "buff")
 _SEED_BOUND = 2**31 - 1
 
 
@@ -84,6 +84,8 @@ def step_reward(prev: dict, state: dict, action: Action, me: int,
     - ``per_step``: every step;
     - ``bump``: a move action after which my position is unchanged (wall,
       crate, bomb). A refused bomb is not a bump.
+    - ``buff``: per ``buff_picked`` event of ``me`` that raised my level
+      (a pickup at the max level earns nothing).
     """
     terms = dict.fromkeys(REWARD_TERMS, 0.0)
     outcome = state["outcome"]
@@ -96,6 +98,10 @@ def step_reward(prev: dict, state: dict, action: Action, me: int,
         elif event["type"] == "block_destroyed":
             if me in event["destroyed_by"]:
                 terms["crate"] += cfg.crate
+        elif event["type"] == "buff_picked" and event["character"] == me:
+            before = prev["characters"][me].get(event["buff"], event["level"])
+            if event["level"] > before:
+                terms["buff"] += cfg.buff
     terms["per_step"] = cfg.per_step
     if action in MOVE_ACTIONS:
         before = prev["characters"][me]
@@ -106,7 +112,7 @@ def step_reward(prev: dict, state: dict, action: Action, me: int,
 
 
 class BombermanGymEnv(gym.Env):
-    """The full game as a Gymnasium env: ``Discrete(6)`` actions, v0 grid observation."""
+    """The full game as a Gymnasium env: ``Discrete(6)`` actions, v1 grid observation."""
 
     metadata = {"render_modes": []}
 

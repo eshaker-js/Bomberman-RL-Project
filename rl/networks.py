@@ -2,7 +2,7 @@
 
 Stable-Baselines3's default image network (``NatureCNN``) uses 8x8 and 4x4
 strided convolutions and needs inputs of at least 36x36, so it cannot take
-our ``(10, 11, 11)`` observation. This network keeps the 11x11 resolution:
+our ``(20, 11, 11)`` observation. This network keeps the 11x11 resolution:
 three 3x3 convolutions with padding 1 (channel sizes from
 ``PPOConfig.conv_channels``), then one linear layer of ``features_dim``.
 

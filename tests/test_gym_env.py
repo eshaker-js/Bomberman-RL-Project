@@ -122,7 +122,7 @@ class ObservationTest(unittest.TestCase):
         self.obs, _ = self.env.reset(seed=3)
 
     def test_shape_dtype_range(self):
-        self.assertEqual(self.obs.shape, (10, 11, 11))
+        self.assertEqual(self.obs.shape, (20, 11, 11))
         self.assertEqual(self.obs.dtype, np.float32)
         self.assertTrue(self.env.observation_space.contains(self.obs))
         for _ in range(60):
@@ -149,14 +149,14 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(self.obs[ob.GATE_HIDDEN, gy, gx], 1)
         self.assertEqual(self.obs[ob.GATE_HIDDEN].sum(), 1)
         self.assertEqual(self.obs[ob.GATE_CLOSED].sum() + self.obs[ob.GATE_OPEN].sum(), 0)
-        self.assertTrue((self.obs[ob.BOMB_READY] == 1).all())
+        self.assertTrue(np.allclose(self.obs[ob.MY_BOMBS_LEFT], 1 / GAME_RULES["buffs"].get("bomb_count").max))
 
     def test_bomb_countdown_and_ready_plane(self):
         obs, *_ = self.env.step(A[Action.BOMB])
         self.assertAlmostEqual(obs[ob.BOMBS, 1, 1], 1.0)  # fresh bomb: countdown = fuse
-        self.assertTrue((obs[ob.BOMB_READY] == 0).all())
+        self.assertTrue((obs[ob.MY_BOMBS_LEFT] == 0).all())
         obs, *_ = self.env.step(A[Action.RIGHT])
-        self.assertAlmostEqual(obs[ob.BOMBS, 1, 1], 8 / 9, places=6)
+        self.assertAlmostEqual(obs[ob.BOMBS, 1, 1], (GAME_RULES["bomb_fuse"] - 1) / GAME_RULES["bomb_fuse"], places=6)
 
     def test_flames_fraction(self):
         env = BombermanGymEnv(None)
@@ -165,17 +165,17 @@ class ObservationTest(unittest.TestCase):
         for _ in range(3):
             env.step(A[Action.RIGHT])  # to (4,1), outside the blast
         obs = None
-        for _ in range(6):  # bomb explodes on step 10
+        for _ in range(GAME_RULES["bomb_fuse"] - 3):  # bomb explodes on step 1 + fuse
             obs, *_ = env.step(A[Action.WAIT])
         self.assertTrue(env.state["flames"])
         for flame in env.state["flames"]:
             self.assertAlmostEqual(obs[ob.FLAMES, flame["y"], flame["x"]],
-                                   flame["ticks_left"] / 4)
-        self.assertAlmostEqual(obs[ob.FLAMES, 1, 1], 1.0)  # tick of the explosion
+                                   flame["ticks_left"] / (GAME_RULES["flame_ticks"] + GAME_RULES["buffs"].get("burn").max))
+        self.assertAlmostEqual(obs[ob.FLAMES, 1, 1], GAME_RULES["flame_ticks"] / (GAME_RULES["flame_ticks"] + GAME_RULES["buffs"].get("burn").max))  # tick of the explosion
         self.assertEqual(obs[ob.BOMBS].sum(), 0)
-        self.assertTrue((obs[ob.BOMB_READY] == 1).all())
+        self.assertTrue(np.allclose(obs[ob.MY_BOMBS_LEFT], 1 / GAME_RULES["buffs"].get("bomb_count").max))
         obs, *_ = env.step(A[Action.WAIT])
-        self.assertAlmostEqual(obs[ob.FLAMES, 1, 1], 0.75)
+        self.assertAlmostEqual(obs[ob.FLAMES, 1, 1], (GAME_RULES["flame_ticks"] - 1) / (GAME_RULES["flame_ticks"] + GAME_RULES["buffs"].get("burn").max))
 
     def test_gate_closed_and_open(self):
         env = BombermanEnv(with_npcs=True, random_crates=True, **GAME_RULES)
@@ -199,7 +199,7 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(obs[ob.ME].sum(), 0)
         self.assertEqual(obs[ob.OPPONENTS].sum(), 2)
         self.assertEqual(obs[ob.OPPONENTS, 9, 1], 0)
-        self.assertTrue((obs[ob.BOMB_READY] == 0).all())
+        self.assertTrue((obs[ob.MY_BOMBS_LEFT] == 0).all())
 
     def test_two_opponents_on_one_cell_stay_binary(self):
         env = BombermanEnv(with_npcs=True, random_crates=True, **GAME_RULES)
@@ -220,8 +220,8 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(as2[ob.OPPONENTS, 1, 1], 1)  # the agent is an opponent
         self.assertEqual(as2[ob.OPPONENTS, 9, 1], 0)
         self.assertEqual(as2[ob.OPPONENTS].sum(), 3)
-        self.assertTrue((as2[ob.BOMB_READY] == 0).all())  # NPC 2's bomb is active
-        self.assertTrue((as0[ob.BOMB_READY] == 1).all())
+        self.assertTrue((as2[ob.MY_BOMBS_LEFT] == 0).all())  # NPC 2's bomb is active
+        self.assertTrue(np.allclose(as0[ob.MY_BOMBS_LEFT], 1 / GAME_RULES["buffs"].get("bomb_count").max))
         shared = [ob.WALLS, ob.CRATES, ob.BOMBS, ob.FLAMES,
                   ob.GATE_HIDDEN, ob.GATE_CLOSED, ob.GATE_OPEN]
         np.testing.assert_array_equal(as0[shared], as2[shared])
@@ -339,12 +339,12 @@ class EpisodeTest(unittest.TestCase):
         npc = env.engine.characters[1]
         npc.x, npc.y = 1, 2  # next to the agent, inside its blast
         env._state = env.engine.get_state()
-        plan = [A[Action.BOMB]] + [A[Action.RIGHT]] * 3 + [A[Action.WAIT]] * 6
+        plan = [A[Action.BOMB]] + [A[Action.RIGHT]] * 3 + [A[Action.WAIT]] * (GAME_RULES["bomb_fuse"] - 3)
         total, info = 0.0, None
         for a in plan:
             _, r, term, trunc, info = env.step(a)
             total += r
-        self.assertEqual(info["steps"], 10)
+        self.assertEqual(info["steps"], 1 + GAME_RULES["bomb_fuse"])
         self.assertIn({"type": "death", "character": 1, "killed_by": (0,)}, info["events"])
         self.assertAlmostEqual(info["reward_terms"]["kill"], 0.3)
         self.assertFalse(term)  # NPCs 2 and 3 still live
@@ -354,9 +354,9 @@ class EpisodeTest(unittest.TestCase):
         env = BombermanGymEnv(None)
         env.reset(seed=0)
         env.step(A[Action.BOMB])
-        for step in range(2, 11):
+        for step in range(2, 2 + GAME_RULES["bomb_fuse"]):
             _, r, term, trunc, info = env.step(A[Action.WAIT])
-            if step < 10:
+            if step < 1 + GAME_RULES["bomb_fuse"]:
                 self.assertFalse(term)
         self.assertTrue(term)
         self.assertFalse(trunc)
@@ -374,12 +374,12 @@ class EpisodeTest(unittest.TestCase):
         self.assertIsNone(info["outcome"])
 
     def test_terminated_wins_over_truncated_on_the_same_step(self):
-        env = BombermanGymEnv(None, EnvConfig(max_steps=10))
+        env = BombermanGymEnv(None, EnvConfig(max_steps=1 + GAME_RULES["bomb_fuse"]))
         env.reset(seed=0)
         env.step(A[Action.BOMB])
-        for _ in range(9):
+        for _ in range(GAME_RULES["bomb_fuse"]):
             _, _, term, trunc, info = env.step(A[Action.WAIT])
-        self.assertEqual(info["steps"], 10)
+        self.assertEqual(info["steps"], 1 + GAME_RULES["bomb_fuse"])
         self.assertTrue(term)
         self.assertFalse(trunc)
 
@@ -561,7 +561,7 @@ class IsolationTest(unittest.TestCase):
         env = BombermanGymEnv("random")
         env.reset(seed=0)
         env.step(0)
-        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 9, "flame_ticks": 4})
+        self.assertEqual(dict(GAME_RULES), {"bomb_fuse": 4, "flame_ticks": 4, "buffs": GAME_RULES["buffs"]})
 
 
 if __name__ == "__main__":

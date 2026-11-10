@@ -40,12 +40,12 @@ A = {a: i for i, a in enumerate(Action)}
 class EncodingTest(unittest.TestCase):
     def test_sizes(self):
         self.assertEqual(len(te.CELLS), 65)  # 47 floor + 18 crate cells
-        self.assertEqual(te.N_STATES, 65 * (65 * 9 + 1) * (65 * 4 + 1))
+        self.assertEqual(te.N_STATES, 65 * (65 * GAME_RULES["bomb_fuse"] + 1) * (65 * 4 + 1))
 
     def test_round_trip(self):
-        cases = [((1, 1), None, None), ((3, 1), (3, 1, 9), None),
+        cases = [((1, 1), None, None), ((3, 1), (3, 1, GAME_RULES["bomb_fuse"]), None),
                  ((4, 1), None, (3, 1, 4)), ((9, 9), (8, 9, 1), (1, 1, 1)),
-                 ((5, 5), (5, 5, 5), (5, 5, 2))]
+                 ((5, 5), (5, 5, 4), (5, 5, 2))]
         seen = set()
         for case in cases:
             index = te.encode_state(*case)
@@ -56,7 +56,7 @@ class EncodingTest(unittest.TestCase):
 
     def test_extremes(self):
         self.assertEqual(te.encode_state(te.CELLS[0]), 0)
-        last = te.encode_state(te.CELLS[-1], (*te.CELLS[-1], 9), (*te.CELLS[-1], 4))
+        last = te.encode_state(te.CELLS[-1], (*te.CELLS[-1], GAME_RULES["bomb_fuse"]), (*te.CELLS[-1], 4))
         self.assertEqual(last, te.N_STATES - 1)
 
     def test_tracker_follows_bomb_and_flames(self):
@@ -65,23 +65,23 @@ class EncodingTest(unittest.TestCase):
         self.assertEqual(te.decode_state(tracker.observe(env.reset())),
                          ((1, 1), None, None))
         state = env.step(Action.BOMB)
-        self.assertEqual(te.decode_state(tracker.observe(state)), ((1, 1), (1, 1, 9), None))
+        self.assertEqual(te.decode_state(tracker.observe(state)), ((1, 1), (1, 1, GAME_RULES["bomb_fuse"]), None))
         for _ in range(3):
             state = env.step(Action.RIGHT)
             tracker.observe(state)
-        self.assertEqual(te.decode_state(tracker.observe(state)), ((4, 1), (1, 1, 6), None))
-        for _ in range(6):
+        self.assertEqual(te.decode_state(tracker.observe(state)), ((4, 1), (1, 1, GAME_RULES["bomb_fuse"] - 3), None))
+        for _ in range(GAME_RULES["bomb_fuse"] - 3):
             state = env.step(Action.WAIT)
             index = tracker.observe(state)
-        self.assertEqual(state["steps"], 10)  # exploded on this step
+        self.assertEqual(state["steps"], 1 + GAME_RULES["bomb_fuse"])  # exploded on this step
         self.assertEqual(te.decode_state(index), ((4, 1), None, (1, 1, 4)))
         # A new bomb while the old flames burn: both fields at once.
         state = env.step(Action.BOMB)
         self.assertEqual(te.decode_state(tracker.observe(state)),
-                         ((4, 1), (4, 1, 9), (1, 1, 3)))
+                         ((4, 1), (4, 1, GAME_RULES["bomb_fuse"]), (1, 1, 3)))
         for _ in range(3):
             state = env.step(Action.WAIT)
-        self.assertEqual(te.decode_state(tracker.observe(state)), ((4, 1), (4, 1, 6), None))
+        self.assertEqual(te.decode_state(tracker.observe(state)), ((4, 1), (4, 1, GAME_RULES["bomb_fuse"] - 3), None))
 
 
 @unittest.skipIf(np is None, MISSING)
@@ -102,7 +102,7 @@ class TinyStageTest(unittest.TestCase):
         self.assertEqual(te.decode_state(s), ((1, 1), None, None))
         self.assertEqual(len(env.state["characters"]), 1)
         self.assertEqual(env.state["grid"], BombermanEnv().reset()["grid"])
-        self.assertEqual(env.state["rules"]["bomb_fuse"], 9)
+        self.assertEqual(env.state["rules"]["bomb_fuse"], GAME_RULES["bomb_fuse"])
 
     def test_crate_ends_with_plus_one(self):
         # Bomb at (3,1): the blast reaches the crate at (5,1). (3,2) is a wall,
@@ -119,7 +119,7 @@ class TinyStageTest(unittest.TestCase):
         env, (s, r, term, trunc, info) = self.play([Action.BOMB] + [Action.WAIT] * 20)
         self.assertTrue(term)
         self.assertEqual(info["result"], "death")
-        self.assertEqual(info["steps"], 10)
+        self.assertEqual(info["steps"], 1 + GAME_RULES["bomb_fuse"])
         self.assertAlmostEqual(r, -1.0 - 0.001)
 
     def test_crate_and_death_together_is_only_death(self):

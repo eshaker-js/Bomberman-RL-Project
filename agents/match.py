@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from game.environment import AGENT_ID, NPC_IDS, BombermanEnv
 
-DEFAULT_MAX_STEPS = 400
+DEFAULT_MAX_STEPS = 800
 
 
 @dataclass

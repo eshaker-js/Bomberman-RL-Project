@@ -92,15 +92,22 @@ def main(argv: list | None = None) -> Path:
     if args.timesteps is not None:
         cfg = dataclasses.replace(cfg, total_timesteps=args.timesteps)
     run_dir = new_run_dir("ppo", args.seed, args.runs_dir)
-    log = RunLog(run_dir, "ppo", args.seed, config_to_dict(cfg),
-                 argv=sys.argv if argv is None else ["-m", "rl.train_ppo", *argv])
-    model = make_model(cfg, args.seed)
-    model.set_logger(configure(str(run_dir), ["csv"]))
-    counter = OutcomeCounter()
-    model.learn(total_timesteps=cfg.total_timesteps, callback=counter)
-    model.save(run_dir / "model.zip")
-    summary = {"timesteps": int(model.num_timesteps), "episodes": counter.counts}
-    log.finish(summary)
+    with RunLog(run_dir, "ppo", args.seed, config_to_dict(cfg),
+                argv=sys.argv if argv is None else ["-m", "rl.train_ppo", *argv]) as log:
+        model = make_model(cfg, args.seed)
+        logger = configure(str(run_dir), ["csv"])
+        model.set_logger(logger)
+        try:
+            counter = OutcomeCounter()
+            model.learn(total_timesteps=cfg.total_timesteps, callback=counter)
+            model.save(run_dir / "model.zip")
+            summary = {"timesteps": int(model.num_timesteps), "episodes": counter.counts}
+            log.finish(summary)
+        finally:
+            # Close progress.csv and the training envs even if training fails:
+            # an open file cannot be deleted on Windows.
+            logger.close()
+            model.get_env().close()
     print(f"run folder: {run_dir}")
     print("summary:", summary)
     return run_dir
