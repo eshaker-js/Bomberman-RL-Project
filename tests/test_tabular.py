@@ -264,10 +264,10 @@ class ScriptTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(run_logging, "datetime", FrozenClock):
             first = run_logging.new_run_dir("x", 0, tmp)
-            self.assertEqual(first.name, "20260102-030405_x_seed0")
+            self.assertEqual(first.name, "20260102-030405-000000_x_seed0")
             (first / "keep.txt").write_text("results")
-            with self.assertRaises(FileExistsError):
-                run_logging.new_run_dir("x", 0, tmp)
+            second = run_logging.new_run_dir("x", 0, tmp)
+            self.assertTrue(second != first and second.is_dir() and not any(second.iterdir()))
             self.assertEqual((first / "keep.txt").read_text(), "results")
 
 if __name__ == "__main__":

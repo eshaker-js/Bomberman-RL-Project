@@ -2,8 +2,10 @@
 
 Every training or evaluation run calls ``new_run_dir``, which creates
 ``<root>/<UTC time>_<kind>_seed<seed>/`` (``root`` defaults to ``runs/``,
-which git ignores) and refuses a folder that already exists, so a run can
-never overwrite another run's results. Inside it a run writes:
+which git ignores) and never reuses a folder that already exists, so a run
+can never overwrite another run's results. The time has microseconds
+(``20261123-101530-123456``, fixed width, so names sort by time). Inside it
+a run writes:
 
 - ``config.json``: the resolved config (defaults plus JSON overrides)
 - ``meta.json``: kind, seed, command line, git commit and whether the
@@ -19,7 +21,7 @@ import json
 import platform
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,12 +34,23 @@ def utc_now() -> str:
 
 
 def new_run_dir(kind: str, seed: int, root: str | Path | None = None) -> Path:
-    """Create and return a new, empty run folder. Fails if it already exists."""
+    """Create and return a new, empty run folder ``<time>_<kind>_seed<seed>``.
+
+    Two runs of the same kind and seed started at the same moment (a tight
+    loop, or two processes; Windows clocks tick only every few ms) never get
+    the same folder: ``mkdir`` without ``exist_ok`` is atomic, and on a clash
+    the time stamp moves on by at least one microsecond and creation is tried
+    again. An existing folder is never reused.
+    """
     root = Path(root) if root is not None else DEFAULT_RUNS_DIR
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    path = root / f"{stamp}_{kind}_seed{seed}"
-    path.mkdir(parents=True, exist_ok=False)
-    return path
+    moment = datetime.now(timezone.utc)
+    while True:
+        path = root / f"{moment.strftime('%Y%m%d-%H%M%S-%f')}_{kind}_seed{seed}"
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+            return path
+        except FileExistsError:
+            moment = max(datetime.now(timezone.utc), moment + timedelta(microseconds=1))
 
 
 def git_info() -> dict:

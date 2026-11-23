@@ -35,6 +35,7 @@ from rl.bomberman_env import BombermanGymEnv
 from rl.config import PPOConfig, config_to_dict, load_config
 from rl.networks import SmallGridCNN
 from rl.run_logging import RunLog, new_run_dir
+from rl.seeds import TrainingSeedGuard, check_training_seed
 
 OUTCOMES = ("win", "loss", "draw", "timeout")
 
@@ -58,8 +59,13 @@ class OutcomeCounter(BaseCallback):
 
 
 def make_model(cfg: PPOConfig, seed: int) -> PPO:
-    """The PPO model and its vectorised envs, seeded with ``seed``."""
-    envs = make_vec_env(lambda: BombermanGymEnv(cfg.opponents, cfg.env),
+    """The PPO model and its vectorised envs, seeded with ``seed``.
+
+    Training never plays a game on an evaluation seed (``rl.seeds``): the run
+    seed is checked first, and every env skips drawn reserved seeds.
+    """
+    check_training_seed(seed, cfg.n_envs)
+    envs = make_vec_env(lambda: TrainingSeedGuard(BombermanGymEnv(cfg.opponents, cfg.env)),
                         n_envs=cfg.n_envs, seed=seed, vec_env_cls=DummyVecEnv)
     policy_kwargs = {
         "features_extractor_class": SmallGridCNN,
