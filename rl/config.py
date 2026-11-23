@@ -89,6 +89,9 @@ class PPOConfig:
     checkpoint_keep_every: int = 1_000_000  # keep one checkpoint per N steps, plus the latest
     eval_every: int = 0  # evaluate during training every N steps; 0 = off (N set after the benchmark)
     eval_games: int = 50  # games per evaluation during training, the same seeds every time
+    # Task 9: where the network trains. "cpu" (default) is exactly the
+    # behaviour before; "cuda" trains on the GPU. Evaluation stays on the CPU.
+    device: str = "cpu"
 
 
 def config_to_dict(config) -> dict:

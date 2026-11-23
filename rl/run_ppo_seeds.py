@@ -63,6 +63,7 @@ import time
 from pathlib import Path
 
 from rl.config import PPOConfig, apply_overrides, config_to_dict
+from rl.devices import check_device
 from rl.eval_protocol import DEFAULT_GAMES, LEVELS
 from rl.evaluate_agent import DEATH_CAUSES
 from rl.priority import keep_awake
@@ -414,6 +415,19 @@ def print_aggregate(aggregate: list) -> None:
               f"{_ci(e, 'mean_length'):>24}")
 
 
+def _check_devices(parser, plan: dict) -> None:
+    """Refuse a plan asking for a device this computer lacks (Task 9).
+
+    Without this every seed would start and fail on its own; the check runs
+    before any folder is created.
+    """
+    for name, config in plan["variants"].items():
+        try:
+            check_device(config["device"])
+        except (ValueError, RuntimeError) as error:
+            parser.error(f"variant {name}: {error}")
+
+
 def main(argv: list | None = None) -> Path:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -435,12 +449,14 @@ def main(argv: list | None = None) -> Path:
             parser.error(f"{source} changed since this plan started; start a new plan "
                          f"instead (the saved copy is in {plan_dir / 'plan.json'})")
         plan = load_plan(text)
+        _check_devices(parser, plan)
     else:
         text = Path(args.plan).read_text(encoding="utf-8")
         try:
             plan = load_plan(text)
         except (ValueError, KeyError, TypeError) as error:
             parser.error(str(error))
+        _check_devices(parser, plan)
         plan_dir = new_run_dir("ppo-plan", plan["seeds"][0], args.runs_dir)
         write_json(plan_dir / "plan.json", {
             "kind": "ppo-plan", "plan_file": str(Path(args.plan).resolve()),

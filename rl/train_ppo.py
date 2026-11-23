@@ -11,7 +11,8 @@ Values come from ``rl.config.PPOConfig`` (all v0), optionally overridden by
 a JSON file; the command-line options override single values on top
 (``--timesteps`` is ``total_timesteps``). Training uses ``n_envs`` copies of
 ``BombermanGymEnv`` (``GAME_RULES``, random crates, three NPCs of
-``PPOConfig.opponents``) on the CPU, and the small CNN of ``rl.networks``.
+``PPOConfig.opponents``) on the CPU, and the small CNN of ``rl.networks``
+(on ``PPOConfig.device``, the CPU by default).
 Training never plays an evaluation seed (``rl.seeds``).
 
 Options (all off or unchanged by default, so a plain run trains exactly as
@@ -36,6 +37,13 @@ before they existed):
   ``eval_games.csv``, written and flushed at once, so a stopped run keeps
   every finished evaluation. The evaluation uses its own env and no training
   RNG, so it does not change what the run learns.
+- ``device`` (Task 9): ``"cpu"`` (default) or ``"cuda"``, where the network
+  trains. ``"cuda"`` without a usable GPU stops before anything is built
+  (``rl.devices``); SB3 itself would silently train on the CPU. The device
+  actually used, and for CUDA the GPU, are in ``meta.json``. The evaluation
+  during training uses the live model on its device; saved models always
+  load and evaluate on the CPU (``rl.evaluate_agent.PPOPolicy``). GPU runs
+  are not bit-identical to CPU runs, nor guaranteed between GPU reruns.
 
 Each run writes a new folder ``runs/<time>_ppo_seed<seed>/`` with
 ``config.json``, ``meta.json``, ``progress.csv`` (SB3's logger, one row per
@@ -54,6 +62,7 @@ import dataclasses
 import multiprocessing
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import torch
@@ -65,6 +74,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from rl.bomberman_env import BombermanGymEnv
 from rl.config import EnvConfig, PPOConfig, config_to_dict, load_config
+from rl.devices import DEVICES, GPU_REPRODUCIBILITY, check_device, gpu_info
 from rl.eval_protocol import length_by_outcome
 from rl.evaluate_agent import (
     BUFF_NAMES,
@@ -118,14 +128,20 @@ class EnvFactory:
         return TrainingSeedGuard(BombermanGymEnv(self.opponents, self.env))
 
 
+# The start of SB3's warning in OnPolicyAlgorithm._maybe_recommend_cpu.
+GPU_MLP_WARNING = r"You are trying to run PPO on the GPU"
+
+
 def make_model(cfg: PPOConfig, seed: int) -> PPO:
     """The PPO model and its vectorised envs, seeded with ``seed``.
 
     Training never plays a game on an evaluation seed (``rl.seeds``): the run
-    seed is checked first, and every env skips drawn reserved seeds.
+    seed is checked first, and every env skips drawn reserved seeds. The
+    device is checked before any env is built (``rl.devices.check_device``).
     """
     if cfg.vec_env not in VEC_ENVS:
         raise ValueError(f"vec_env must be one of {VEC_ENVS}, not {cfg.vec_env!r}")
+    check_device(cfg.device)
     check_training_seed(seed, cfg.n_envs)
     factory = EnvFactory(cfg.opponents, cfg.env, cfg.high_priority)
     if cfg.vec_env == "subproc":
@@ -142,23 +158,45 @@ def make_model(cfg: PPOConfig, seed: int) -> PPO:
     }
     # "MlpPolicy" only names SB3's actor-critic policy here: the features
     # come from SmallGridCNN, which avoids CnnPolicy's uint8 image checks.
-    return PPO("MlpPolicy", envs, learning_rate=cfg.learning_rate, n_steps=cfg.n_steps,
-               batch_size=cfg.batch_size, n_epochs=cfg.n_epochs, gamma=cfg.gamma,
-               gae_lambda=cfg.gae_lambda, clip_range=cfg.clip_range,
-               ent_coef=cfg.ent_coef, vf_coef=cfg.vf_coef,
-               max_grad_norm=cfg.max_grad_norm, policy_kwargs=policy_kwargs,
-               seed=seed, device="cpu", verbose=0)
+    def build():
+        return PPO("MlpPolicy", envs, learning_rate=cfg.learning_rate, n_steps=cfg.n_steps,
+                   batch_size=cfg.batch_size, n_epochs=cfg.n_epochs, gamma=cfg.gamma,
+                   gae_lambda=cfg.gae_lambda, clip_range=cfg.clip_range,
+                   ent_coef=cfg.ent_coef, vf_coef=cfg.vf_coef,
+                   max_grad_norm=cfg.max_grad_norm, policy_kwargs=policy_kwargs,
+                   seed=seed, device=cfg.device, verbose=0)
+
+    if cfg.device != "cuda":
+        return build()
+    # On the GPU, SB3 warns that PPO with "MlpPolicy" is meant for the CPU
+    # because it assumes an MLP feature extractor. It does not apply here:
+    # our features come from a CNN (SmallGridCNN). Only that one warning is
+    # ignored, and only while the model is built.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=GPU_MLP_WARNING, category=UserWarning)
+        return build()
+
 
 
 def apply_runtime(cfg: PPOConfig) -> dict:
     """Set torch's threads and the priority of this process; return what was set."""
     if cfg.torch_threads < 0:
         raise ValueError("torch_threads must be 0 (torch's default) or more")
+    check_device(cfg.device)
     if cfg.torch_threads > 0:
         torch.set_num_threads(cfg.torch_threads)
     priority = raise_priority() if cfg.high_priority else "normal (high_priority off)"
     return {"torch_threads": torch.get_num_threads(), "priority": priority,
-            "vec_env": cfg.vec_env}
+            "vec_env": cfg.vec_env, "device": cfg.device}
+
+
+def device_record(model) -> dict:
+    """The device the model actually uses, for ``meta.json`` (with the GPU on CUDA)."""
+    record = {"device": str(model.device)}
+    if model.device.type == "cuda":
+        record["gpu"] = gpu_info()
+        record["reproducibility"] = GPU_REPRODUCIBILITY
+    return record
 
 
 class CheckpointKeeper:
@@ -329,6 +367,8 @@ def parse_args(argv: list | None):
                         help="override PPOConfig.eval_every (0: off)")
     parser.add_argument("--eval-games", type=int, default=None,
                         help="override PPOConfig.eval_games")
+    parser.add_argument("--device", choices=DEVICES, default=None,
+                        help="override PPOConfig.device (cuda needs a CUDA build of torch)")
     return parser.parse_args(argv)
 
 
@@ -337,7 +377,7 @@ def resolve_config(args) -> PPOConfig:
     overrides = {"total_timesteps": args.timesteps, "vec_env": args.vec_env,
                  "torch_threads": args.torch_threads, "high_priority": args.high_priority,
                  "checkpoint_every": args.checkpoint_every, "eval_every": args.eval_every,
-                 "eval_games": args.eval_games}
+                 "eval_games": args.eval_games, "device": args.device}
     return dataclasses.replace(cfg, **{k: v for k, v in overrides.items() if v is not None})
 
 
@@ -351,6 +391,8 @@ def main(argv: list | None = None) -> Path:
         log.meta["runtime"] = runtime
         write_json(run_dir / "meta.json", log.meta)
         model = make_model(cfg, args.seed)
+        log.meta["runtime"].update(device_record(model))
+        write_json(run_dir / "meta.json", log.meta)
         logger = configure(str(run_dir), ["csv"])
         model.set_logger(logger)
         evaluator = None
