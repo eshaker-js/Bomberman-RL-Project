@@ -80,6 +80,15 @@ class PPOConfig:
     net_arch_pi: tuple = (64,)  # v0: policy head hidden layers
     net_arch_vf: tuple = (64,)  # v0: value head hidden layers
     env: EnvConfig = field(default_factory=EnvConfig)
+    # How training runs (Task 8). None of these changes what PPO learns; the
+    # defaults are exactly the behaviour before they existed.
+    vec_env: str = "dummy"  # "dummy": envs in one process; "subproc": one process each (spawn)
+    torch_threads: int = 0  # CPU threads of torch; 0 = torch's own default
+    high_priority: bool = False  # Windows: raise the training processes to "High"
+    checkpoint_every: int = 0  # save checkpoints/model_<steps>.zip every N steps; 0 = off
+    checkpoint_keep_every: int = 1_000_000  # keep one checkpoint per N steps, plus the latest
+    eval_every: int = 0  # evaluate during training every N steps; 0 = off (N set after the benchmark)
+    eval_games: int = 50  # games per evaluation during training, the same seeds every time
 
 
 def config_to_dict(config) -> dict:
