@@ -1,0 +1,23 @@
+{
+  "_about": "First real PPO runs: PPO v0 against 3 random bots, 5 seeds. Run with: python -m rl.run_ppo_seeds experiments/ppo/first_runs.json (keys starting with _ are comments).",
+  "name": "first_runs",
+  "seeds": [0, 1, 2, 3, 4],
+  "_parallel": "SET FROM THE BENCHMARK: conclusion.runs_side_by_side in benchmark.json (the 'best for 5 seeds' line).",
+  "parallel": 1,
+  "config": {
+    "opponents": "random",
+    "_total_timesteps": "SET ME: the steps per seed. From the laptop benchmark: conclusion.steps_per_seed_per_night in benchmark.json (printed as 'one 8-hour night: N steps per seed'). It is 8 h x 3600 x (speed of one run when 'parallel' runs share the CPU) x 0.95 / ceil(5 / parallel), rounded down to whole rollouts of 2,048 steps. The plan refuses to start while this is null.",
+    "total_timesteps": null,
+    "_eval_every": "SET ME: the evaluation interval. From the benchmark: conclusion.smallest_eval_every_for_5_percent (or larger), so 50 worst-case games cost at most about 5% of training time.",
+    "eval_every": null,
+    "eval_games": 50,
+    "checkpoint_every": 1000000,
+    "checkpoint_keep_every": 1000000,
+    "_vec_env_torch_threads": "SET FROM THE BENCHMARK: conclusion.vec_env and conclusion.torch_threads_each.",
+    "vec_env": "dummy",
+    "torch_threads": 0,
+    "high_priority": true
+  },
+  "variants": {"v0": {}},
+  "evaluation": {"games": 200, "stochastic": false}
+}
