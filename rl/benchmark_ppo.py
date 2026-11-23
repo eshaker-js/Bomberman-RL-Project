@@ -34,14 +34,32 @@ Measures, each after a warm-up and only for a few thousand steps:
    worst case of ``eval_games`` games of 800 steps, and the smallest
    ``eval_every`` that keeps that worst case under 5% of training time
 
+5. the GPU (Task 9), only when ``torch.cuda.is_available()``; otherwise
+   it is skipped, says so (``gpu_skipped``) and everything above is exactly
+   as before Task 9:
+   - training on the GPU against ``random`` and ``rule`` at ``n_envs = 8``:
+     ``torch_threads`` in {1, 2, 4} x ``vec_env`` in {dummy, subproc}
+   - for information only, outside the conclusion: the best GPU setting at
+     ``n_envs`` 16 and 32 (do more game copies help on the GPU?)
+   - 1, 2 and 3 runs at once sharing the GPU at the best GPU setting, one
+     variant each, same rules as above but a 30-second window; the main
+     process samples the GPU memory meanwhile, so the memory per run
+     includes each process's CUDA context
+   - the evaluation probe again with the model on the GPU
+   To stay near 20 minutes, the CPU grid then drops the 16-thread rows and
+   uses one thread count (not two) for ``rule``.
+
 ``n_envs`` is a PPO hyperparameter (it changes the rollout size), so the
-conclusion only chooses threads, ``vec_env`` and how many runs side by side,
-always at the v0 ``n_envs = 8``; the other values are for information.
+conclusion only chooses the device, threads, ``vec_env`` and how many runs
+side by side, always at the v0 ``n_envs = 8``; the other values are for
+information. CPU and GPU are compared by steps per seed per night (a tie
+goes to the CPU, the default); with a GPU the conclusion also gives the GPU
+memory per run and how many runs fit.
 
 Prints a table and a conclusion (the fastest setting, hours for 1M and 10M
-steps, and the steps per seed when 5 seeds share one 8-hour night) and
-writes ``runs/<time>_benchmark_seed0/benchmark.json`` with every number and
-the machine (CPU, cores, threads, RAM, Python, torch). If the default
+steps, and the steps per seed when 5 seeds share one 8-hour night, and the
+device) and writes ``runs/<time>_benchmark_seed0/benchmark.json`` with every number and
+the machine (CPU, cores, threads, RAM, Python, torch, GPU). If the default
 benchmark passes ``--budget-minutes`` (20) it starts no further training or
 side-by-side measurement (the short evaluation probe still runs, the
 conclusion needs it) and marks the results ``partial``.
@@ -64,6 +82,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from rl.bomberman_env import BombermanGymEnv
 from rl.config import EnvConfig, PPOConfig, apply_overrides, config_to_dict
+from rl.devices import gpu_info
 from rl.evaluate_agent import ModelPolicy, evaluate_seeds
 from rl.run_logging import ROOT, dependency_versions, git_info, new_run_dir, utc_now, write_json
 from rl.seeds import train_eval_seeds
@@ -91,7 +110,16 @@ FULL = {
     "eval_games": PPOConfig().eval_games,
     "eval_probe_games": 10,
     "overrides": {},
+    # Task 9: the GPU part (only with CUDA)
+    "gpu_threads": (1, 2, 4),
+    "gpu_vec_envs": ("dummy", "subproc"),
+    "gpu_info_n_envs": (16, 32),
+    "gpu_side_by_side": (1, 2, 3),
+    "gpu_window_seconds": 30.0,
 }
+# With CUDA the full CPU grid is cut so CPU and GPU fit in about 20 minutes:
+# no 16-thread rows, and one thread count (not two) for the rule phase.
+FULL_CPU_CUTS_WITH_GPU = {"threads": (4, 8, 12), "rule_threads": 1}
 QUICK = {
     "env_opponents": ("random",),
     "env_steps": 200,
@@ -106,6 +134,11 @@ QUICK = {
     "eval_probe_games": 2,
     "overrides": {"n_steps": 32, "batch_size": 32, "n_epochs": 1, "features_dim": 32,
                   "conv_channels": [8, 8, 8], "env": {"max_steps": 40}},
+    "gpu_threads": (1,),
+    "gpu_vec_envs": ("dummy", "subproc"),
+    "gpu_info_n_envs": (4,),
+    "gpu_side_by_side": (1, 2),
+    "gpu_window_seconds": 3.0,
 }
 
 
@@ -193,7 +226,18 @@ def machine_info() -> dict:
     return {"cpu": _cpu_name(), "physical_cores": _physical_cores(),
             "logical_threads": os.cpu_count(), "ram_gb": _ram_gb(),
             "system": platform.platform(), "python": sys.version.split()[0],
-            "torch": torch.__version__, "torch_default_threads": torch.get_num_threads()}
+            "torch": torch.__version__, "torch_default_threads": torch.get_num_threads(),
+            "gpu": gpu_info()}
+
+
+def _mb(n_bytes: int) -> float:
+    return round(n_bytes / 2**20, 1)
+
+
+def gpu_used_mb() -> float:
+    """Memory in use on GPU 0 by every process (CUDA contexts included)."""
+    free, total = torch.cuda.mem_get_info(0)
+    return _mb(total - free)
 
 
 # --------------------------------------------------------------- measurements
@@ -249,9 +293,11 @@ class CycleClock(BaseCallback):
 
 
 def bench_config(base: PPOConfig, opponents: str, n_envs: int, vec_env: str,
-                 threads: int) -> PPOConfig:
+                 threads: int, device: str | None = None) -> PPOConfig:
+    """``base`` with the measured settings; ``device`` ``None`` keeps ``base.device``."""
     return dataclasses.replace(base, opponents=opponents, n_envs=n_envs, vec_env=vec_env,
-                               torch_threads=threads, checkpoint_every=0, eval_every=0)
+                               torch_threads=threads, checkpoint_every=0, eval_every=0,
+                               device=device or base.device)
 
 
 def training_speed(cfg: PPOConfig, min_timed_steps: int) -> dict:
@@ -259,6 +305,9 @@ def training_speed(cfg: PPOConfig, min_timed_steps: int) -> dict:
     apply_runtime(cfg)
     cycle = cfg.n_envs * cfg.n_steps
     timed = max(1, math.ceil(min_timed_steps / cycle))
+    gpu = cfg.device == "cuda"
+    if gpu:
+        torch.cuda.reset_peak_memory_stats()
     model = make_model(cfg, BENCH_SEED)
     try:
         clock = CycleClock()
@@ -267,9 +316,16 @@ def training_speed(cfg: PPOConfig, min_timed_steps: int) -> dict:
     finally:
         model.get_env().close()
     seconds = end - clock.starts[1]
-    return {"opponents": cfg.opponents, "torch_threads": cfg.torch_threads,
-            "n_envs": cfg.n_envs, "vec_env": cfg.vec_env, "timed_steps": timed * cycle,
-            "seconds": round(seconds, 3), "steps_per_second": round(timed * cycle / seconds, 1)}
+    row = {"opponents": cfg.opponents, "torch_threads": cfg.torch_threads,
+           "n_envs": cfg.n_envs, "vec_env": cfg.vec_env, "timed_steps": timed * cycle,
+           "seconds": round(seconds, 3), "steps_per_second": round(timed * cycle / seconds, 1)}
+    if gpu:
+        # Only GPU rows carry the device, so the CPU rows stay as before Task 9.
+        row["device"] = "cuda"
+        row["gpu_peak_reserved_mb"] = _mb(torch.cuda.max_memory_reserved())
+        del model
+        torch.cuda.empty_cache()  # the next row starts from an empty GPU cache
+    return row
 
 
 def worker(spec_path: str) -> None:
@@ -299,15 +355,23 @@ def worker(spec_path: str) -> None:
         seconds = starts[-1] - starts[0] if cycles else 0.0
     finally:
         model.get_env().close()
-    result.write_text(json.dumps({"cycles": cycles, "steps": cycles * cycle,
-                                  "seconds": seconds}), encoding="utf-8")
+    measured = {"cycles": cycles, "steps": cycles * cycle, "seconds": seconds}
+    if cfg.device == "cuda":
+        measured["gpu_peak_reserved_mb"] = _mb(torch.cuda.max_memory_reserved())
+    result.write_text(json.dumps(measured), encoding="utf-8")
 
 
 def side_by_side(base: PPOConfig, k: int, threads: int, window: float, folder: Path) -> dict:
-    """Total steps per second of ``k`` training processes at once."""
+    """Total steps per second of ``k`` training processes at once.
+
+    On the GPU this process also samples the GPU memory in use, before the
+    workers start and while they train, for the memory per run.
+    """
     folder.mkdir(parents=True)
     go = folder / "go"
     procs, specs, logs = [], [], []
+    gpu = base.device == "cuda"
+    memory = {"before": gpu_used_mb(), "peak": 0.0} if gpu else None
     try:
         for index in range(k):
             spec = {"config": {**config_to_dict(base), "torch_threads": threads},
@@ -330,8 +394,11 @@ def side_by_side(base: PPOConfig, k: int, threads: int, window: float, folder: P
                 raise TimeoutError("side-by-side workers never got ready")
             time.sleep(0.05)
         go.write_text("go", encoding="utf-8")
-        for proc in procs:
-            proc.wait(timeout=window + 900)
+        if gpu:
+            _wait_sampling_gpu(procs, window + 900, memory)
+        else:
+            for proc in procs:
+                proc.wait(timeout=window + 900)
         if any(p.returncode != 0 for p in procs):
             raise RuntimeError(f"a side-by-side worker failed; see {folder}")
     finally:
@@ -342,7 +409,24 @@ def side_by_side(base: PPOConfig, k: int, threads: int, window: float, folder: P
         for log in logs:
             log.close()
     results = [json.loads(Path(s["result"]).read_text(encoding="utf-8")) for s in specs]
-    return side_by_side_entry(k, threads, base, results)
+    entry = side_by_side_entry(k, threads, base, results)
+    if gpu:
+        _, total = torch.cuda.mem_get_info(0)
+        entry.update(device="cuda", gpu_total_mb=_mb(total),
+                     gpu_used_before_mb=memory["before"], gpu_used_peak_mb=memory["peak"],
+                     gpu_peak_reserved_mb_each=[r.get("gpu_peak_reserved_mb")
+                                                for r in results])
+    return entry
+
+
+def _wait_sampling_gpu(procs: list, timeout: float, memory: dict) -> None:
+    """Wait for every worker, recording the highest GPU memory in use."""
+    began = time.perf_counter()
+    while any(p.poll() is None for p in procs):
+        memory["peak"] = max(memory["peak"], gpu_used_mb())
+        if time.perf_counter() - began > timeout:
+            raise subprocess.TimeoutExpired("side-by-side workers", timeout)
+        time.sleep(0.25)
 
 
 def side_by_side_entry(k: int, threads: int, base: PPOConfig, results: list) -> dict:
@@ -433,7 +517,10 @@ def hours(steps: int, sps: float) -> float:
 def run_benchmark(quick: bool = False, high_priority: bool = False,
                   runs_dir: str | Path | None = None, budget_minutes: float = 20.0,
                   argv: list | None = None) -> tuple[Path, dict]:
+    cuda = torch.cuda.is_available()
     plan = QUICK if quick else FULL
+    if cuda and not quick:
+        plan = {**plan, **FULL_CPU_CUTS_WITH_GPU}
     base = apply_overrides(PPOConfig(), {**plan["overrides"], "high_priority": high_priority})
     out = new_run_dir("benchmark", BENCH_SEED, runs_dir)
     started = time.perf_counter()
@@ -442,7 +529,9 @@ def run_benchmark(quick: bool = False, high_priority: bool = False,
                "command": [sys.executable, *(sys.argv if argv is None else argv)],
                "git": git_info(), "versions": dependency_versions(),
                "machine": machine_info(), "plan": {k: v for k, v in plan.items()},
-               "base_config": config_to_dict(base), "partial": False}
+               "base_config": config_to_dict(base), "partial": False,
+               "gpu_skipped": None if cuda else
+               "CUDA not available (torch.cuda.is_available() is False): GPU part skipped"}
     write_json(out / "benchmark.json", results)
 
     def over_budget() -> bool:
@@ -489,6 +578,15 @@ def run_benchmark(quick: bool = False, high_priority: bool = False,
                 break
         torch.set_num_threads(default_threads)
 
+        top_gpu = chosen_gpu = None
+        if cuda:
+            top_gpu = gpu_training(results, base, plan, quick, over_budget, say, out)
+            torch.set_num_threads(default_threads)
+            if top_gpu is not None:
+                chosen_gpu = bench_config(base, "random",
+                                          V0_N_ENVS if not quick else top_gpu["n_envs"],
+                                          top_gpu["vec_env"], top_gpu["torch_threads"], "cuda")
+
         top = best(results["training"], opponents="random", n_envs=V0_N_ENVS) \
             or best(results["training"], opponents="random")
         if top is None or not done_random:
@@ -519,10 +617,16 @@ def run_benchmark(quick: bool = False, high_priority: bool = False,
                        else f"NOT MEASURED (rollouts timed: {entry['cycles_each']})"))
                 write_json(out / "benchmark.json", results)
 
+        if chosen_gpu is not None:
+            gpu_side_by_side(results, chosen_gpu, plan, over_budget, say, out)
+
         results["eval"] = eval_cost(chosen, plan["eval_probe_games"], plan["eval_games"],
                                     top["steps_per_second"])
+        if chosen_gpu is not None:
+            results["eval_gpu"] = eval_cost(chosen_gpu, plan["eval_probe_games"],
+                                            plan["eval_games"], top_gpu["steps_per_second"])
         torch.set_num_threads(default_threads)
-        results["conclusion"] = conclude(results, chosen)
+        results["conclusion"] = conclude(results, chosen, chosen_gpu)
     finally:
         results["finished_at"] = utc_now()
         results["minutes"] = round((time.perf_counter() - started) / 60, 2)
@@ -532,18 +636,141 @@ def run_benchmark(quick: bool = False, high_priority: bool = False,
     return out, results
 
 
-def conclude(results: dict, chosen: PPOConfig) -> dict:
+def gpu_training(results: dict, base: PPOConfig, plan: dict, quick: bool,
+                 over_budget, say, out: Path) -> dict | None:
+    """The GPU grid (``training_gpu``) and the information rows; the best row.
+
+    The grid is ``random`` then ``rule`` at the plan's ``n_envs`` (8 in the
+    full benchmark). The information rows (``training_gpu_info``) take the
+    best ``random`` setting to more game copies; they are never used by the
+    conclusion, because ``n_envs`` is a PPO hyperparameter.
+    """
+    n_envs = V0_N_ENVS if not quick else plan["n_envs"][0]
+    results["training_gpu"] = []
+    for opponents in ("random", "rule"):
+        if opponents == "rule" and not plan["rule_threads"]:
+            break
+        grid = [(t, v) for t in plan["gpu_threads"] for v in plan["gpu_vec_envs"]]
+        for index, (threads, vec) in enumerate(grid):
+            if over_budget():
+                results["partial"] = True
+                say("over the time budget: the GPU grid stops here (partial)")
+                break
+            row = training_speed(bench_config(base, opponents, n_envs, vec, threads, "cuda"),
+                                 plan["min_timed_steps"])
+            results["training_gpu"].append(row)
+            say(f"GPU train vs {opponents} [{index + 1}/{len(grid)}] threads {threads}, "
+                f"n_envs {n_envs}, {vec}: {row['steps_per_second']} steps/s")
+            write_json(out / "benchmark.json", results)
+    top = best(results["training_gpu"], opponents="random")
+    if top is None:
+        results["gpu_skipped"] = "over the time budget before any GPU measurement"
+        return None
+    results["training_gpu_info"] = []
+    for more in plan["gpu_info_n_envs"]:
+        if over_budget():
+            results["partial"] = True
+            break
+        row = training_speed(bench_config(base, "random", more, top["vec_env"],
+                                          top["torch_threads"], "cuda"),
+                             plan["min_timed_steps"])
+        row["outside_conclusion"] = True
+        results["training_gpu_info"].append(row)
+        say(f"GPU info (outside the conclusion): n_envs {more}: "
+            f"{row['steps_per_second']} steps/s")
+        write_json(out / "benchmark.json", results)
+    return top
+
+
+def gpu_side_by_side(results: dict, chosen_gpu: PPOConfig, plan: dict, over_budget,
+                     say, out: Path) -> None:
+    """1, 2, 3 runs sharing the GPU at the best GPU setting (``side_by_side_gpu``).
+
+    One variant per run count (the best GPU thread count each); the rules of
+    the CPU side by side hold: at least 2 full cycles per worker, "not
+    measured" instead of 0, oversubscribed variants skipped.
+    """
+    results["side_by_side_gpu"] = []
+    threads = chosen_gpu.torch_threads
+    logical = os.cpu_count()
+    for k in plan["gpu_side_by_side"]:
+        if k > 1 and logical and k * threads > logical:
+            results["side_by_side_gpu"].append(
+                {"runs": k, "torch_threads_each": threads, "device": "cuda", "skipped":
+                 f"oversubscribed: {k} x {threads} threads > {logical} logical threads"})
+            continue
+        if over_budget() and k > 1:
+            results["partial"] = True
+            say("over the time budget: no more GPU side-by-side measurements (partial)")
+            break
+        entry = side_by_side(chosen_gpu, k, threads, plan["gpu_window_seconds"],
+                             out / f"side_by_side_gpu_k{k}_threads{threads}")
+        results["side_by_side_gpu"].append(entry)
+        total = entry["total_steps_per_second"]
+        say(f"GPU: {k} run(s) at once, {threads} threads each: "
+            + (f"{total} steps/s in total, GPU memory in use {entry['gpu_used_peak_mb']} MB"
+               if entry["measured"] else
+               f"NOT MEASURED (rollouts timed: {entry['cycles_each']})"))
+        write_json(out / "benchmark.json", results)
+
+
+def gpu_memory(side_by_side_gpu: list) -> dict | None:
+    """GPU memory per run and how many runs fit, from the GPU side by side.
+
+    Uses the measured entry with the most runs: per run = (peak in use -
+    in use before the workers) / runs, CUDA contexts included. "Before"
+    includes this benchmark process and the desktop, so the fit is on the
+    safe side.
+    """
+    usable = [e for e in side_by_side_gpu if e.get("measured") and not e.get("skipped")
+              and e.get("gpu_used_peak_mb") is not None]
+    if not usable:
+        return None
+    entry = max(usable, key=lambda e: e["runs"])
+    per_run = (entry["gpu_used_peak_mb"] - entry["gpu_used_before_mb"]) / entry["runs"]
+    free = entry["gpu_total_mb"] - entry["gpu_used_before_mb"]
+    return {"per_run_mb": round(per_run, 1), "from_runs": entry["runs"],
+            "total_mb": entry["gpu_total_mb"], "used_before_mb": entry["gpu_used_before_mb"],
+            "runs_that_fit": int(free // per_run) if per_run > 0 else None,
+            "note": "per run includes its CUDA context; 'used before' includes the "
+                    "benchmark process and the desktop"}
+
+
+def device_plans(device: str, training: list, sbs: list, chosen: PPOConfig) -> dict:
+    """One device's single-run speed and its best night plan."""
     cycle = chosen.n_envs * chosen.n_steps
-    single = best(results["training"], opponents="random", n_envs=chosen.n_envs,
+    single = best(training, opponents="random", n_envs=chosen.n_envs,
                   vec_env=chosen.vec_env, torch_threads=chosen.torch_threads)
     sps = single["steps_per_second"]
-    plans = night_plan(results["side_by_side"], cycle)
+    plans = night_plan(sbs, cycle)
     if not plans:  # nothing side by side was measured: one run at a time, grid speed
         plans = night_plan([{"runs": 1, "torch_threads_each": chosen.torch_threads,
                              "steps_per_second_each": [sps],
                              "total_steps_per_second": sps}], cycle)
-    plan = max(plans, key=lambda p: p["steps_per_seed_per_night"])
+    plans = [{**p, "device": device} for p in plans]
+    return {"device": device, "chosen": chosen, "sps": sps, "plans": plans,
+            "plan": max(plans, key=lambda p: p["steps_per_seed_per_night"])}
+
+
+def conclude(results: dict, chosen: PPOConfig, chosen_gpu: PPOConfig | None = None) -> dict:
+    """The fastest setting overall. Without ``chosen_gpu``: the CPU, as before Task 9.
+
+    CPU and GPU are compared by steps per seed per night; the GPU must be
+    strictly better (a tie keeps the CPU, the default).
+    """
+    options = [device_plans("cpu", results["training"], results["side_by_side"], chosen)]
+    if chosen_gpu is not None:
+        options.append(device_plans("cuda", results["training_gpu"],
+                                    results.get("side_by_side_gpu", []), chosen_gpu))
+    win = options[0]
+    for option in options[1:]:
+        if option["plan"]["steps_per_seed_per_night"] > win["plan"]["steps_per_seed_per_night"]:
+            win = option
+    chosen, sps, plan = win["chosen"], win["sps"], win["plan"]
+    plans = [p for option in options for p in option["plans"]]
+    evaluation = results["eval_gpu"] if win["device"] == "cuda" else results["eval"]
     return {
+        "device": win["device"],
         "opponents": "random",
         "n_envs": chosen.n_envs,
         "vec_env": chosen.vec_env,
@@ -559,7 +786,15 @@ def conclude(results: dict, chosen: PPOConfig) -> dict:
                  f"of {plan['runs']} run(s), {int(EVAL_SHARE * 100)}% kept for evaluation",
         "night_plans": plans,
         "smallest_eval_every_for_5_percent":
-            results["eval"]["smallest_eval_every_for_5_percent"],
+            evaluation["smallest_eval_every_for_5_percent"],
+        "by_device": {o["device"]: {
+            "single_run_steps_per_second": o["sps"],
+            "vec_env": o["chosen"].vec_env, "torch_threads": o["chosen"].torch_threads,
+            "best_runs_side_by_side": o["plan"]["runs"],
+            "best_steps_per_seed_per_night": o["plan"]["steps_per_seed_per_night"]}
+            for o in options},
+        "gpu_memory": gpu_memory(results.get("side_by_side_gpu", [])),
+        "gpu_skipped": results.get("gpu_skipped"),
         "note": "hours include 5% for the evaluation during training; "
                 "n_envs stays at the v0 value (a PPO hyperparameter)",
     }
@@ -586,17 +821,54 @@ def print_report(results: dict) -> None:
             total = r["total_steps_per_second"]
             print(f"  {r['runs']:>4} {r['torch_threads_each']:>12} {each:>24} "
                   f"{'n/a' if total is None else f'{total:.1f}':>8}")
+    if results.get("training_gpu"):
+        print("\nPPO training speed on the GPU (steps/s)")
+        print(f"  {'opponents':9} {'threads':>7} {'n_envs':>6} {'vec_env':>8} {'steps/s':>9}"
+              f" {'GPU MB':>8}")
+        rows = results["training_gpu"] + results.get("training_gpu_info", [])
+        for r in rows:
+            label = "  (information only, outside the conclusion)" \
+                if r.get("outside_conclusion") else ""
+            print(f"  {r['opponents']:9} {r['torch_threads']:>7} {r['n_envs']:>6} "
+                  f"{r['vec_env']:>8} {r['steps_per_second']:>9.1f} "
+                  f"{r['gpu_peak_reserved_mb']:>8.0f}{label}")
+    if results.get("side_by_side_gpu"):
+        print("\nRuns side by side on the GPU")
+        print(f"  {'runs':>4} {'threads each':>12} {'each (steps/s)':>24} {'total':>8}"
+              f" {'GPU MB in use':>14}")
+        for r in results["side_by_side_gpu"]:
+            if r.get("skipped"):
+                print(f"  {r['runs']:>4} {r['torch_threads_each']:>12}   skipped: {r['skipped']}")
+                continue
+            each = ", ".join("not measured" if x is None else f"{x:.0f}"
+                             for x in r["steps_per_second_each"])
+            total = r["total_steps_per_second"]
+            print(f"  {r['runs']:>4} {r['torch_threads_each']:>12} {each:>24} "
+                  f"{'n/a' if total is None else f'{total:.1f}':>8} "
+                  f"{r['gpu_used_peak_mb']:>14.0f}")
+    if results.get("gpu_skipped"):
+        print(f"\nGPU: {results['gpu_skipped']}")
     if results.get("eval"):
         e = results["eval"]
         print(f"\nEvaluation during training: {e['seconds_per_eval_step'] * 1000:.2f} ms per "
               f"step, worst case {e['eval_games']} games x 800 steps = "
               f"{e['worst_case_seconds']} s")
+    if results.get("eval_gpu"):
+        e = results["eval_gpu"]
+        print(f"Evaluation during training on the GPU: {e['seconds_per_eval_step'] * 1000:.2f}"
+              f" ms per step, worst case {e['worst_case_seconds']} s")
     c = results.get("conclusion")
     if c:
         print("\nConclusion" + (" (PARTIAL: stopped early at the time budget)"
                                 if results["partial"]
                                 else ""))
         v0 = " = v0" if c["n_envs"] == V0_N_ENVS else ", not v0: quick mode"
+        if len(c["by_device"]) > 1:
+            for name, d in c["by_device"].items():
+                print(f"  {name:4}: {d['single_run_steps_per_second']} steps/s for one run, "
+                      f"best night {d['best_steps_per_seed_per_night']:,} steps per seed "
+                      f"({d['best_runs_side_by_side']} at once)")
+        print(f"  device: {c['device']}")
         print(f"  fastest setting (n_envs {c['n_envs']}{v0}): vec_env {c['vec_env']}, "
               f"torch_threads {c['torch_threads']}: "
               f"{c['single_run_steps_per_second']} steps/s for one run")
@@ -609,6 +881,14 @@ def print_report(results: dict) -> None:
               f"({c['night']})")
         print(f"  smallest eval_every for <= 5% evaluation cost: "
               f"{c['smallest_eval_every_for_5_percent']:,} steps")
+        if c.get("gpu_memory"):
+            m = c["gpu_memory"]
+            free = f"{m['total_mb'] - m['used_before_mb']:.0f} MB free of {m['total_mb']:.0f} MB"
+            if m["runs_that_fit"] is None:
+                print(f"  GPU memory: no change seen while the runs trained ({free})")
+            else:
+                print(f"  GPU memory: about {m['per_run_mb']:.0f} MB per run; "
+                      f"{m['runs_that_fit']} run(s) fit in the {free}")
 
 
 def main(argv: list | None = None):
