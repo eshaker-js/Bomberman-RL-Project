@@ -93,7 +93,14 @@ python -m rl.train_ppo --timesteps 10000 --seed 0
 python -m rl.evaluate_agent --run runs/<run folder> --opponents random
 python -m agents.ladder_eval --games 200 --game-rules
 python -m agents.buff_eval --games 200
+python -m rl.benchmark_ppo --high-priority
+python -m rl.run_ppo_seeds experiments/ppo/first_runs.json
+python -m rl.run_ppo_seeds --continue runs/<plan folder>
+python -m rl.eval_protocol --run runs/<ppo run folder>
+python -m rl.plot_ppo runs/<plan folder>
 ```
+
+`rl.benchmark_ppo` measures how fast PPO trains on this computer and prints the settings and step counts for the long runs. `rl.run_ppo_seeds` trains and evaluates a plan of PPO runs (several seeds) and summarises them with 95% confidence intervals; after a stop, `--continue` finishes only what is left. `rl.eval_protocol` evaluates a PPO run against all 5 ladder levels, 200 games each, on the evaluation seeds (from 1,000,000; training never plays them). `rl.plot_ppo` draws the learning curves from the evaluation during training.
 
 Training and agent evaluation write a new folder in `runs/` (config, seed, git commit, metrics, model). `rl/config.py` holds every training value (all v0); any script takes `--config overrides.json`. `agents.ladder_eval` checks the opponent ladder, `agents.buff_eval` measures what each buff is worth to the rule bot.
 
