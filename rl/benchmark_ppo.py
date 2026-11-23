@@ -25,7 +25,11 @@ Measures, each after a warm-up and only for a few thousand steps:
 3. runs side by side: 1, 2 or 3 separate training processes at once (the
    best setting with ``n_envs = 8``), each with ``best threads // k`` and
    each with the full best thread count; total steps per second over the
-   same 60-second window
+   same 60-second window. Each worker keeps going until it has timed at
+   least 2 full rollouts and updates (at most ``WORKER_CAP_SECONDS``); a
+   worker that still has none is "not measured" (never 0). A variant whose
+   ``runs x threads`` exceeds the computer's logical threads is skipped as
+   oversubscribed (it cannot win: the runs only slow each other down)
 4. one evaluation during training: the cost of an evaluation step, the
    worst case of ``eval_games`` games of 800 steps, and the smallest
    ``eval_every`` that keeps that worst case under 5% of training time
@@ -38,8 +42,9 @@ Prints a table and a conclusion (the fastest setting, hours for 1M and 10M
 steps, and the steps per seed when 5 seeds share one 8-hour night) and
 writes ``runs/<time>_benchmark_seed0/benchmark.json`` with every number and
 the machine (CPU, cores, threads, RAM, Python, torch). If the default
-benchmark passes ``--budget-minutes`` (20) it stops the training grid early
-and marks the results ``partial``.
+benchmark passes ``--budget-minutes`` (20) it starts no further training or
+side-by-side measurement (the short evaluation probe still runs, the
+conclusion needs it) and marks the results ``partial``.
 """
 
 import argparse
@@ -69,6 +74,8 @@ ENV_SEEDS = 5_000_000  # first seed of the raw env measurement (no evaluation ra
 NIGHT_HOURS = 8
 NIGHT_SEEDS = 5
 EVAL_SHARE = 0.05  # the in-training evaluation may cost this share of training time
+MIN_TIMED_CYCLES = 2  # full rollouts+updates each side-by-side worker must time
+WORKER_CAP_SECONDS = 240.0  # but no worker trains longer than this after "go"
 V0_N_ENVS = PPOConfig().n_envs
 
 FULL = {
@@ -212,18 +219,33 @@ def env_speed(opponents: str, steps: int) -> dict:
 
 
 class CycleClock(BaseCallback):
-    """Times each rollout+update cycle; optionally stops training at a deadline."""
+    """Times each rollout+update cycle; optionally stops training.
 
-    def __init__(self, deadline: float | None = None) -> None:
+    With a ``deadline`` training stops once it has passed and at least
+    ``min_cycles`` full cycles were timed, or at the ``cap`` in any case.
+    A full cycle runs from one rollout start to the next.
+    """
+
+    def __init__(self, deadline: float | None = None, min_cycles: int = 0,
+                 cap: float | None = None) -> None:
         super().__init__()
         self.starts: list[float] = []
         self.deadline = deadline
+        self.min_cycles = min_cycles
+        self.cap = cap
 
     def _on_rollout_start(self) -> None:
         self.starts.append(time.perf_counter())
 
+    def keep_going(self, now: float) -> bool:
+        if self.deadline is None:
+            return True
+        if self.cap is not None and now >= self.cap:
+            return False
+        return now < self.deadline or len(self.starts) - 1 < self.min_cycles
+
     def _on_step(self) -> bool:
-        return self.deadline is None or time.perf_counter() < self.deadline
+        return self.keep_going(time.perf_counter())
 
 
 def bench_config(base: PPOConfig, opponents: str, n_envs: int, vec_env: str,
@@ -266,7 +288,10 @@ def worker(spec_path: str) -> None:
             if time.perf_counter() - waited > 600:
                 raise TimeoutError("no go signal")
             time.sleep(0.05)
-        clock = CycleClock(deadline=time.perf_counter() + spec["window_seconds"])
+        now = time.perf_counter()
+        clock = CycleClock(deadline=now + spec["window_seconds"],
+                           min_cycles=MIN_TIMED_CYCLES,
+                           cap=now + max(WORKER_CAP_SECONDS, spec["window_seconds"]))
         model.learn(total_timesteps=10**9, callback=clock, reset_num_timesteps=False)
         # Every full cycle starts at one rollout start and ends at the next.
         starts = clock.starts
@@ -317,11 +342,37 @@ def side_by_side(base: PPOConfig, k: int, threads: int, window: float, folder: P
         for log in logs:
             log.close()
     results = [json.loads(Path(s["result"]).read_text(encoding="utf-8")) for s in specs]
-    per_run = [r["steps"] / r["seconds"] if r["seconds"] else 0.0 for r in results]
+    return side_by_side_entry(k, threads, base, results)
+
+
+def side_by_side_entry(k: int, threads: int, base: PPOConfig, results: list) -> dict:
+    """The result of ``k`` workers; a worker without a full cycle is not measured.
+
+    The total is only given when every worker was measured: a sum over some
+    of them would look like a slower setting, not a failed measurement.
+    """
+    per_run = [round(r["steps"] / r["seconds"], 1) if r["cycles"] and r["seconds"] else None
+               for r in results]
+    measured = all(x is not None for x in per_run)
     return {"runs": k, "torch_threads_each": threads, "n_envs": base.n_envs,
-            "vec_env": base.vec_env,
-            "steps_per_second_each": [round(x, 1) for x in per_run],
-            "total_steps_per_second": round(sum(per_run), 1)}
+            "vec_env": base.vec_env, "measured": measured,
+            "cycles_each": [r["cycles"] for r in results],
+            "steps_per_second_each": per_run,
+            "total_steps_per_second": round(sum(per_run), 1) if measured else None}
+
+
+def side_by_side_variants(k: int, best_threads: int, logical: int | None) -> tuple:
+    """``(threads to measure, threads skipped as oversubscribed)`` for ``k`` runs.
+
+    ``k`` runs try ``best // k`` threads each and the full ``best``; any
+    choice with ``k x threads`` above the logical threads is skipped. One
+    run alone is always measured.
+    """
+    wanted = [best_threads] if k == 1 else sorted({max(1, best_threads // k), best_threads})
+    if k == 1 or not logical:
+        return wanted, []
+    keep = [t for t in wanted if k * t <= logical]
+    return keep, [t for t in wanted if k * t > logical]
 
 
 def eval_cost(cfg: PPOConfig, probe_games: int, games: int, train_sps: float) -> dict:
@@ -364,6 +415,8 @@ def night_plan(sbs: list, cycle: int) -> list:
     """
     plans = []
     for entry in sbs:
+        if not entry.get("measured", True) or entry.get("skipped"):
+            continue
         k = entry["runs"]
         each = min(entry["steps_per_second_each"])
         rounds = math.ceil(NIGHT_SEEDS / k)
@@ -443,17 +496,27 @@ def run_benchmark(quick: bool = False, high_priority: bool = False,
         chosen = bench_config(base, "random", V0_N_ENVS if not quick else top["n_envs"],
                               top["vec_env"], top["torch_threads"])
         results["side_by_side"] = []
+        logical = os.cpu_count()
         for k in plan["side_by_side"]:
-            variants = [top["torch_threads"]]
-            if k > 1:
-                variants = sorted({max(1, top["torch_threads"] // k), top["torch_threads"]})
+            variants, skipped = side_by_side_variants(k, top["torch_threads"], logical)
+            for threads in skipped:
+                results["side_by_side"].append(
+                    {"runs": k, "torch_threads_each": threads, "skipped":
+                     f"oversubscribed: {k} x {threads} threads > {logical} logical threads"})
+                say(f"{k} run(s) at once, {threads} threads each: skipped (oversubscribed)")
             for threads in variants:
+                if over_budget() and k > 1:
+                    results["partial"] = True
+                    say("over the time budget: no more side-by-side measurements (partial)")
+                    break
                 entry = side_by_side(chosen, k, threads, plan["window_seconds"],
                                      out / f"side_by_side_k{k}_threads{threads}")
                 entry["threads_split"] = threads != top["torch_threads"]
                 results["side_by_side"].append(entry)
+                total = entry["total_steps_per_second"]
                 say(f"{k} run(s) at once, {threads} threads each: "
-                    f"{entry['total_steps_per_second']} steps/s in total")
+                    + (f"{total} steps/s in total" if entry["measured"]
+                       else f"NOT MEASURED (rollouts timed: {entry['cycles_each']})"))
                 write_json(out / "benchmark.json", results)
 
         results["eval"] = eval_cost(chosen, plan["eval_probe_games"], plan["eval_games"],
@@ -473,9 +536,13 @@ def conclude(results: dict, chosen: PPOConfig) -> dict:
     cycle = chosen.n_envs * chosen.n_steps
     single = best(results["training"], opponents="random", n_envs=chosen.n_envs,
                   vec_env=chosen.vec_env, torch_threads=chosen.torch_threads)
-    plans = night_plan(results["side_by_side"], cycle)
-    plan = max(plans, key=lambda p: p["steps_per_seed_per_night"])
     sps = single["steps_per_second"]
+    plans = night_plan(results["side_by_side"], cycle)
+    if not plans:  # nothing side by side was measured: one run at a time, grid speed
+        plans = night_plan([{"runs": 1, "torch_threads_each": chosen.torch_threads,
+                             "steps_per_second_each": [sps],
+                             "total_steps_per_second": sps}], cycle)
+    plan = max(plans, key=lambda p: p["steps_per_seed_per_night"])
     return {
         "opponents": "random",
         "n_envs": chosen.n_envs,
@@ -511,9 +578,14 @@ def print_report(results: dict) -> None:
         print("\nRuns side by side")
         print(f"  {'runs':>4} {'threads each':>12} {'each (steps/s)':>24} {'total':>8}")
         for r in results["side_by_side"]:
-            each = ", ".join(f"{x:.0f}" for x in r["steps_per_second_each"])
+            if r.get("skipped"):
+                print(f"  {r['runs']:>4} {r['torch_threads_each']:>12}   skipped: {r['skipped']}")
+                continue
+            each = ", ".join("not measured" if x is None else f"{x:.0f}"
+                             for x in r["steps_per_second_each"])
+            total = r["total_steps_per_second"]
             print(f"  {r['runs']:>4} {r['torch_threads_each']:>12} {each:>24} "
-                  f"{r['total_steps_per_second']:>8.1f}")
+                  f"{'n/a' if total is None else f'{total:.1f}':>8}")
     if results.get("eval"):
         e = results["eval"]
         print(f"\nEvaluation during training: {e['seconds_per_eval_step'] * 1000:.2f} ms per "
@@ -521,7 +593,8 @@ def print_report(results: dict) -> None:
               f"{e['worst_case_seconds']} s")
     c = results.get("conclusion")
     if c:
-        print("\nConclusion" + (" (PARTIAL: the grid stopped early)" if results["partial"]
+        print("\nConclusion" + (" (PARTIAL: stopped early at the time budget)"
+                                if results["partial"]
                                 else ""))
         v0 = " = v0" if c["n_envs"] == V0_N_ENVS else ", not v0: quick mode"
         print(f"  fastest setting (n_envs {c['n_envs']}{v0}): vec_env {c['vec_env']}, "

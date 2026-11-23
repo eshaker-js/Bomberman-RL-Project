@@ -76,5 +76,45 @@ class QuickBenchmarkTest(unittest.TestCase):
         self.assertEqual(benchmark_ppo.hours(1_000_000, 100.0), round(1e6 / 100 / 3600 / 0.95, 2))
 
 
+@unittest.skipIf(torch is None, MISSING)
+class SideBySideRulesTest(unittest.TestCase):
+    """Part 3b: no 0 for an unmeasured worker, no oversubscribed variants."""
+
+    def test_a_worker_without_a_full_cycle_is_not_measured(self):
+        base = benchmark_ppo.PPOConfig()
+        results = [{"cycles": 3, "steps": 6144, "seconds": 30.0},
+                   {"cycles": 0, "steps": 0, "seconds": 0.0}]
+        entry = benchmark_ppo.side_by_side_entry(2, 4, base, results)
+        self.assertEqual(entry["steps_per_second_each"], [204.8, None])
+        self.assertFalse(entry["measured"])
+        self.assertIsNone(entry["total_steps_per_second"])
+        good = benchmark_ppo.side_by_side_entry(1, 4, base, results[:1])
+        self.assertEqual((good["measured"], good["total_steps_per_second"]), (True, 204.8))
+        plans = benchmark_ppo.night_plan(
+            [entry, good, {"runs": 3, "torch_threads_each": 16, "skipped": "oversubscribed"}],
+            2048)
+        self.assertEqual([p["runs"] for p in plans], [1])
+
+    def test_oversubscribed_variants_are_skipped(self):
+        variants = benchmark_ppo.side_by_side_variants
+        self.assertEqual(variants(1, 16, 16), ([16], []))  # one run: always measured
+        self.assertEqual(variants(2, 16, 16), ([8], [16]))
+        self.assertEqual(variants(3, 16, 16), ([5], [16]))
+        self.assertEqual(variants(2, 8, 16), ([4, 8], []))
+        self.assertEqual(variants(3, 4, 4), ([1], [4]))  # this cloud machine
+        self.assertEqual(variants(2, 1, 4), ([1], []))
+
+    def test_workers_time_at_least_two_cycles_but_stop_at_the_cap(self):
+        clock = benchmark_ppo.CycleClock(deadline=10.0, min_cycles=2, cap=100.0)
+        clock.starts = [0.0, 6.0]  # one full cycle so far
+        self.assertTrue(clock.keep_going(5.0))
+        self.assertTrue(clock.keep_going(20.0))  # past the deadline, only one cycle
+        clock.starts.append(25.0)  # two full cycles
+        self.assertFalse(clock.keep_going(26.0))
+        clock.starts = [0.0]
+        self.assertFalse(clock.keep_going(100.0))  # the cap wins
+        self.assertTrue(benchmark_ppo.CycleClock().keep_going(1e9))  # no deadline
+
+
 if __name__ == "__main__":
     unittest.main()
