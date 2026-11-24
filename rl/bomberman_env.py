@@ -43,7 +43,10 @@ from rl.observation import OBS_SHAPE, encode_observation
 ACTIONS = tuple(Action)
 MOVE_ACTIONS = frozenset({Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT})
 
-REWARD_TERMS = ("outcome", "kill", "crate", "per_step", "bump", "buff")
+# The Task 10 terms come last, so the sum of the v0 terms keeps its order
+# (with both at 0.0 every total is bit-identical to before they existed).
+REWARD_TERMS = ("outcome", "kill", "crate", "per_step", "bump", "buff",
+                "wait", "bomb_survived")
 _SEED_BOUND = 2**31 - 1
 
 
@@ -86,8 +89,27 @@ def step_reward(prev: dict, state: dict, action: Action, me: int,
       crate, bomb). A refused bomb is not a bump.
     - ``buff``: per ``buff_picked`` event of ``me`` that raised my level
       (a pickup at the max level earns nothing).
+    - ``wait`` (Task 10, 0.0 by default): the action was ``WAIT``, or a
+      ``BOMB`` the engine refused (no bomb left, or a bomb already on my
+      cell), which also leaves me standing still (``bomb_refused``).
+    - ``bomb_survived`` (Task 10, 0.0 by default): per own bomb that
+      exploded and broke at least one crate, while I am alive after the
+      step. Counted as ``min(exploded, crates)``: ``exploded`` = my bombs in
+      ``prev["bombs"]`` and not in ``state["bombs"]`` (matched by cell; in a
+      step a bomb leaves the list only by exploding, by its fuse or a chain
+      reaction), ``crates`` = this step's ``block_destroyed`` events with
+      ``me`` in ``destroyed_by``. The events don't say which bomb broke
+      which crate, so this is exact when one of my bombs explodes. With two
+      or more (extra-bomb buff) it is a known approximation: one bomb
+      breaking 2 crates and another breaking none pays twice (one too many);
+      two bombs that both reach the same single crate pay once (one too
+      few). It never pays more often than crates were broken (at most 18 per
+      game). A bomb placed and set off on the same step is not in ``prev``
+      and is never counted, but its placer stands on its burning cell and
+      dies, so it would pay nothing anyway.
     """
     terms = dict.fromkeys(REWARD_TERMS, 0.0)
+    my_crates = 0
     outcome = state["outcome"]
     if outcome is not None:
         terms["outcome"] = {"win": cfg.win, "loss": cfg.loss, "draw": cfg.draw}[outcome]
@@ -98,6 +120,7 @@ def step_reward(prev: dict, state: dict, action: Action, me: int,
         elif event["type"] == "block_destroyed":
             if me in event["destroyed_by"]:
                 terms["crate"] += cfg.crate
+                my_crates += 1
         elif event["type"] == "buff_picked" and event["character"] == me:
             before = prev["characters"][me].get(event["buff"], event["level"])
             if event["level"] > before:
@@ -108,7 +131,38 @@ def step_reward(prev: dict, state: dict, action: Action, me: int,
         after = state["characters"][me]
         if (before["x"], before["y"]) == (after["x"], after["y"]):
             terms["bump"] = cfg.bump
+    if action is Action.WAIT or (action is Action.BOMB and bomb_refused(prev, me)):
+        terms["wait"] = cfg.wait
+    exploded = own_bomb_cells(prev, me) - own_bomb_cells(state, me)
+    if exploded and not state["characters"][me]["dead"]:
+        terms["bomb_survived"] = cfg.bomb_survived * min(len(exploded), my_crates)
     return float(sum(terms.values())), terms
+
+
+def own_bomb_cells(state: dict, me: int) -> set:
+    """The cells ``(x, y)`` of ``me``'s bombs in ``state`` (one bomb per cell).
+
+    A state without ``"bombs"`` (a hand-made test state) has no bombs; the
+    engine's states always have the key.
+    """
+    return {(b["x"], b["y"]) for b in state.get("bombs", ()) if b["owner"] == me}
+
+
+def bomb_refused(prev: dict, me: int) -> bool:
+    """Would the engine refuse a ``BOMB`` of ``me`` in the state ``prev``?
+
+    It refuses when ``me`` has no bomb left or a bomb already lies on its
+    cell (``BombermanEnv._apply_action``). Exact from ``prev`` for the agent:
+    it acts first (lowest ID), so no one places a bomb on its cell before it
+    in the same step. Without buffs there is no ``bombs_left``; each
+    character then has one bomb.
+    """
+    me_entry = prev["characters"][me]
+    own = own_bomb_cells(prev, me)
+    left = me_entry.get("bombs_left", 0 if own else 1)
+    occupied = any((b["x"], b["y"]) == (me_entry["x"], me_entry["y"])
+                   for b in prev.get("bombs", ()))
+    return left <= 0 or occupied
 
 
 class BombermanGymEnv(gym.Env):

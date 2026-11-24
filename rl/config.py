@@ -32,6 +32,11 @@ class RewardConfig:
     per_step: float = -0.001  # v0: every step
     bump: float = -0.01  # v0: a move action that left the position unchanged
     buff: float = 0.0  # v0 (off): per buff picked up that raised one of my levels
+    # Task 10 shaping terms, both off (0.0) by default so training is exactly v0.
+    wait: float = 0.0  # per step on which the agent chose WAIT (or a refused BOMB)
+    # Per own bomb that exploded and broke at least one crate, while the agent
+    # is alive (counted as min(bombs exploded, crates broken); see step_reward).
+    bomb_survived: float = 0.0
 
 
 @dataclass(frozen=True)
