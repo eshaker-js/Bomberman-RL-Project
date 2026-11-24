@@ -104,6 +104,28 @@ python -m rl.plot_ppo runs/<plan folder>
 
 Training and agent evaluation write a new folder in `runs/` (config, seed, git commit, metrics, model). `rl/config.py` holds every training value (all v0); any script takes `--config overrides.json`. `agents.ladder_eval` checks the opponent ladder, `agents.buff_eval` measures what each buff is worth to the rule bot.
 
+### Training on the GPU
+
+Training runs on the CPU unless you ask for the GPU (`PPOConfig.device`, `"cpu"` by default). Only training uses the GPU: evaluation and loading a saved model always run on the CPU, whichever device trained it.
+
+Check whether the GPU can be used:
+
+```text
+nvidia-smi
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+`nvidia-smi` must list the GPU and its driver, and the Python line must print a CUDA version and `True`. `None` for `torch.version.cuda` means a CPU-only build of torch. To install a CUDA build on Windows, take the exact command from the official selector on [pytorch.org](https://pytorch.org/get-started/locally/) (Stable, Windows, Pip, Python, the CUDA version that suits your driver), run it inside the project's `.venv`, then `pip install -r requirements.txt` again.
+
+Benchmark CPU and GPU (the GPU part runs only when CUDA is available, otherwise it is skipped and says so), then train on the GPU:
+
+```text
+python -m rl.benchmark_ppo --high-priority
+python -m rl.train_ppo --timesteps 10000 --seed 0 --device cuda
+```
+
+In a plan for `rl.run_ppo_seeds`, set `"device": "cuda"` in `config`. Asking for `cuda` when CUDA is not available stops before anything starts, with the checks above. `meta.json` records the device used and the GPU. GPU runs are not bit-identical to CPU runs with the same seed, and not guaranteed bit-identical between reruns on the GPU.
+
 ## Tests
 
 ```text
