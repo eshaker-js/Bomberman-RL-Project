@@ -1,0 +1,34 @@
+{
+  "_about": "Experiment E2: can PPO get past waiting? v0 against two reward terms (wait, bomb_survived), a higher entropy bonus, and training against noisy25 bots. 5 seeds per variant, each judged by the final evaluation protocol (all 5 levels, 200 games each). Run with: python -m rl.run_ppo_seeds experiments/ppo/e2_waiting.json (keys starting with _ are comments).",
+  "name": "e2_waiting",
+  "seeds": [0, 1, 2, 3, 4],
+  "_parallel": "1: the long runs train on the GPU, one run at a time.",
+  "parallel": 1,
+  "config": {
+    "opponents": "random",
+    "_total_timesteps": "SET ME: the steps per seed, from the laptop benchmark. The plan refuses to start while this is null.",
+    "total_timesteps": null,
+    "_eval_every": "SET ME: the evaluation interval, from the benchmark (conclusion.smallest_eval_every_for_5_percent or larger).",
+    "eval_every": null,
+    "eval_games": 50,
+    "checkpoint_every": 1000000,
+    "checkpoint_keep_every": 1000000,
+    "_device_vec_env_torch_threads": "SET FROM THE BENCHMARK: device (cpu or cuda), vec_env (dummy or subproc) and torch_threads for one run at a time.",
+    "device": null,
+    "vec_env": null,
+    "torch_threads": null,
+    "high_priority": true
+  },
+  "_variants": "Every variant is v0 plus the overrides below. wait = -0.002 per WAIT (or refused BOMB); bomb_survived = 0.05 per own bomb that exploded and broke at least one crate while the agent is alive; ent_coef 0.05 (v0: 0.01). The noisy25 variant trains against noisy25 bots but draws its learning curve against random bots, like the others.",
+  "variants": {
+    "v0": {},
+    "shaped": {"env": {"reward": {"wait": -0.002, "bomb_survived": 0.05}}},
+    "explore": {"ent_coef": 0.05},
+    "shaped_explore": {"ent_coef": 0.05,
+                       "env": {"reward": {"wait": -0.002, "bomb_survived": 0.05}}},
+    "shaped_explore_noisy25": {"ent_coef": 0.05,
+                               "env": {"reward": {"wait": -0.002, "bomb_survived": 0.05}},
+                               "opponents": "noisy25", "eval_opponents": "random"}
+  },
+  "evaluation": {"games": 200, "stochastic": false}
+}

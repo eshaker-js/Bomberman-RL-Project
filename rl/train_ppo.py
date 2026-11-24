@@ -30,8 +30,9 @@ before they existed):
   ``checkpoint_keep_every`` steps are kept (the run deletes only its own
   older checkpoints)
 - ``eval_every``: every N steps (and at step 0 and at the end), the
-  deterministic policy plays ``eval_games`` games against the run's training
-  opponents on the in-training evaluation seeds (``rl.seeds.TRAIN_EVAL_SEEDS``,
+  deterministic policy plays ``eval_games`` games against ``eval_opponents``
+  (Task 10; ``None``, the default, means the run's training opponents) on
+  the in-training evaluation seeds (``rl.seeds.TRAIN_EVAL_SEEDS``,
   the same seeds every time), with the run's ``env.max_steps``. One row per
   evaluation goes to ``eval_curve.csv`` and one row per game to
   ``eval_games.csv``, written and flushed at once, so a stopped run keeps
@@ -48,7 +49,16 @@ before they existed):
 Each run writes a new folder ``runs/<time>_ppo_seed<seed>/`` with
 ``config.json``, ``meta.json``, ``progress.csv`` (SB3's logger, one row per
 rollout, including the cumulative episode outcomes), ``model.zip`` and the
-files of the options above. Evaluate it with
+files of the options above.
+
+Reward terms in ``progress.csv`` (Task 10, always on): each finished
+episode's reward is split into its terms (``info["reward_terms"]``, see
+``rl.bomberman_env.step_reward``), summed over the episode. Each rollout row
+has ``reward_terms/<term>`` (one column per term of ``REWARD_TERMS``) and
+``reward_terms/total``, the means over the episodes that finished in that
+rollout, and ``reward_terms/episodes``, how many there were. In a rollout
+where no episode finished, ``episodes`` is 0 and the other cells are blank.
+Logging only reads the step infos, so it never changes what the run learns. Evaluate it with
 ``python -m rl.eval_protocol --run <that folder>``.
 
 PPO: J. Schulman et al., "Proximal Policy Optimization Algorithms", 2017.
@@ -72,7 +82,8 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-from rl.bomberman_env import BombermanGymEnv
+from agents.noisy_bot import LADDER
+from rl.bomberman_env import REWARD_TERMS, BombermanGymEnv
 from rl.config import EnvConfig, PPOConfig, config_to_dict, load_config
 from rl.devices import DEVICES, GPU_REPRODUCIBILITY, check_device, gpu_info
 from rl.eval_protocol import length_by_outcome
@@ -109,6 +120,57 @@ class OutcomeCounter(BaseCallback):
             self.logger.record(f"outcomes/{name}", count)
 
 
+class RewardTermLogger(BaseCallback):
+    """Logs what each finished episode was paid for, per reward term (Task 10).
+
+    Adds every step's ``info["reward_terms"]`` to a running sum per env.
+    When an env's episode ends, SB3 hands over the info of its final step
+    (the env is reset afterwards), so that step is still counted, and the
+    sum moves to this rollout's finished episodes. At the end of each
+    rollout it records the mean of each term (``reward_terms/<term>``), of
+    their total (``reward_terms/total``) and the number of finished episodes
+    (``reward_terms/episodes``). With no finished episode only ``episodes``
+    (0) is recorded, so the other cells of that row stay blank. An episode
+    counts in the rollout in which it finishes; an episode still running at
+    the end of training is not logged.
+
+    It only reads ``self.locals`` and draws no random numbers, so it never
+    changes what the run learns.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.running: list = []
+        self.finished: list = []
+        self.logged: list = []  # one dict per rollout, as recorded (for tests)
+
+    def _on_training_start(self) -> None:
+        self.running = [dict.fromkeys(REWARD_TERMS, 0.0)
+                        for _ in range(self.training_env.num_envs)]
+
+    def _on_step(self) -> bool:
+        for i, (done, info) in enumerate(zip(self.locals["dones"], self.locals["infos"])):
+            sums = self.running[i]
+            for term, value in info["reward_terms"].items():
+                sums[term] += value
+            if done:
+                self.finished.append(sums)
+                self.running[i] = dict.fromkeys(REWARD_TERMS, 0.0)
+        return True
+
+    def _on_rollout_end(self) -> None:
+        episodes = len(self.finished)
+        row = {"reward_terms/episodes": episodes}
+        if episodes:
+            for term in REWARD_TERMS:
+                row[f"reward_terms/{term}"] = sum(e[term] for e in self.finished) / episodes
+            row["reward_terms/total"] = sum(sum(e.values()) for e in self.finished) / episodes
+        for key, value in row.items():
+            self.logger.record(key, value)
+        self.logged.append(row)
+        self.finished = []
+
+
 @dataclasses.dataclass(frozen=True)
 class EnvFactory:
     """Builds one training env. A plain picklable object, so ``spawn`` can send it.
@@ -128,6 +190,22 @@ class EnvFactory:
         return TrainingSeedGuard(BombermanGymEnv(self.opponents, self.env))
 
 
+def eval_opponents(cfg: PPOConfig) -> str:
+    """The ladder level of the evaluation during training (Task 10)."""
+    return cfg.opponents if cfg.eval_opponents is None else cfg.eval_opponents
+
+
+def check_eval_opponents(cfg: PPOConfig) -> None:
+    """``ValueError`` unless ``eval_opponents`` is ``None`` or a ladder level.
+
+    Checked at the start of every run, even with ``eval_every = 0``, so a
+    typo is never silently ignored.
+    """
+    if cfg.eval_opponents is not None and cfg.eval_opponents not in LADDER:
+        raise ValueError(f"unknown eval_opponents {cfg.eval_opponents!r}; "
+                         f"choose from {list(LADDER)} or null (= opponents)")
+
+
 # The start of SB3's warning in OnPolicyAlgorithm._maybe_recommend_cpu.
 GPU_MLP_WARNING = r"You are trying to run PPO on the GPU"
 
@@ -142,6 +220,7 @@ def make_model(cfg: PPOConfig, seed: int) -> PPO:
     if cfg.vec_env not in VEC_ENVS:
         raise ValueError(f"vec_env must be one of {VEC_ENVS}, not {cfg.vec_env!r}")
     check_device(cfg.device)
+    check_eval_opponents(cfg)
     check_training_seed(seed, cfg.n_envs)
     factory = EnvFactory(cfg.opponents, cfg.env, cfg.high_priority)
     if cfg.vec_env == "subproc":
@@ -296,7 +375,7 @@ class TrainingEvalCallback(BaseCallback):
             raise ValueError("eval_every and eval_games must be at least 1")
         self.every = cfg.eval_every
         self.seeds = train_eval_seeds(cfg.eval_games)
-        self.env = BombermanGymEnv(cfg.opponents, cfg.env)
+        self.env = BombermanGymEnv(eval_opponents(cfg), cfg.env)
         self.next_at = cfg.eval_every
         self.last_at: int | None = None
         self.started = time.perf_counter()
@@ -398,7 +477,7 @@ def main(argv: list | None = None) -> Path:
         evaluator = None
         try:
             counter = OutcomeCounter()
-            callbacks = [counter]
+            callbacks = [counter, RewardTermLogger()]
             if cfg.checkpoint_every > 0:
                 keeper = CheckpointKeeper(run_dir / "checkpoints", cfg.checkpoint_keep_every)
                 callbacks.append(CheckpointCallback(keeper, cfg.checkpoint_every))
