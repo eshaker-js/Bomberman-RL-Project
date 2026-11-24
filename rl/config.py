@@ -97,6 +97,11 @@ class PPOConfig:
     # Task 9: where the network trains. "cpu" (default) is exactly the
     # behaviour before; "cuda" trains on the GPU. Evaluation stays on the CPU.
     device: str = "cpu"
+    # Task 10: the opponents of the evaluation during training (a ladder
+    # level). None = the same as ``opponents``, exactly the behaviour before.
+    # Lets a run that trains against noisy25 still draw its learning curve
+    # against random bots, comparable with the other runs.
+    eval_opponents: str | None = None
 
 
 def config_to_dict(config) -> dict:
@@ -123,13 +128,25 @@ def apply_overrides(config, overrides: dict):
         if dataclasses.is_dataclass(current):
             changes[key] = apply_overrides(current, value)
         else:
-            changes[key] = _checked(key, current, value)
+            changes[key] = _checked(key, current, value, fields[key].type)
     return dataclasses.replace(config, **changes)
 
 
-def _checked(key: str, current, value):
-    """``value`` converted to the type of ``current``, or ``TypeError``."""
-    if isinstance(current, bool) or isinstance(value, bool):
+# A field declared ``str | None`` (Task 10: ``PPOConfig.eval_opponents``).
+OPTIONAL_STR = str | None
+
+
+def _checked(key: str, current, value, declared=None):
+    """``value`` converted to the type of ``current``, or ``TypeError``.
+
+    A field declared ``str | None`` (``declared``) takes a string or ``None``
+    (JSON ``null``), whatever its current value; every other field is checked
+    against the type of its current value, as before.
+    """
+    if declared == OPTIONAL_STR:
+        if value is None or isinstance(value, str):
+            return value
+    elif isinstance(current, bool) or isinstance(value, bool):
         if isinstance(current, bool) and isinstance(value, bool):
             return value
     elif isinstance(current, float) and isinstance(value, (int, float)):
@@ -140,7 +157,8 @@ def _checked(key: str, current, value):
         return value
     elif isinstance(current, tuple) and isinstance(value, (list, tuple)):
         return tuple(value)
-    raise TypeError(f"config key {key!r} expects {type(current).__name__}, "
+    expected = "str or null" if declared == OPTIONAL_STR else type(current).__name__
+    raise TypeError(f"config key {key!r} expects {expected}, "
                     f"got {value!r}")
 
 
