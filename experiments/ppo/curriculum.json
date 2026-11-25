@@ -1,0 +1,39 @@
+{
+  "_about": "Curriculum: can PPO learn to bomb when it first trains against harmless opponents? One run per seed trains the same model against idle bots (they always WAIT: crates, kills and the gate win can be learned safely), then noisy25, noisy10 and rule bots, each stage for a fixed number of steps. Rewards and entropy bonus of E2's shaped_explore. 5 seeds, each judged by the final evaluation protocol (all 5 levels, 200 games each). Run with: python -m rl.run_ppo_seeds experiments/ppo/curriculum.json (keys starting with _ are comments).",
+  "name": "curriculum",
+  "seeds": [0, 1, 2, 3, 4],
+  "_parallel": "1: the long runs train on the GPU, one run at a time.",
+  "parallel": 1,
+  "config": {
+    "_total_timesteps": "SET ME: the steps per seed. Must equal the sum of the four stages' timesteps (the plan refuses otherwise). The plan refuses to start while this is null.",
+    "total_timesteps": null,
+    "_eval_every": "SET ME: the evaluation interval, from the benchmark (conclusion.smallest_eval_every_for_5_percent or larger).",
+    "eval_every": null,
+    "eval_games": 50,
+    "checkpoint_every": 1000000,
+    "checkpoint_keep_every": 1000000,
+    "_device_vec_env_torch_threads": "SET FROM THE BENCHMARK: device (cpu or cuda), vec_env (dummy or subproc) and torch_threads for one run at a time.",
+    "device": null,
+    "vec_env": null,
+    "torch_threads": null,
+    "high_priority": true
+  },
+  "_variants": "One variant: v0 plus E2's shaped_explore (wait = -0.002 per WAIT or refused BOMB; bomb_survived = 0.05 per own bomb that exploded and broke at least one crate while the agent is alive; ent_coef 0.05, v0: 0.01) and the four curriculum stages. opponents must equal the first stage's opponents (idle).",
+  "variants": {
+    "curriculum": {
+      "ent_coef": 0.05,
+      "env": {"reward": {"wait": -0.002, "bomb_survived": 0.05}},
+      "opponents": "idle",
+      "_eval_opponents": "SET ME: the ladder level of the evaluation during training (never idle; random would match E2's learning curves). A run with stages must set it.",
+      "eval_opponents": null,
+      "_stages": "SET ME: the timesteps of each stage, the same for every seed. Each must be a positive whole number of rollouts (n_envs x n_steps = 8 x 256 = 2,048 steps), and together they must equal total_timesteps. Stage k's envs are seeded with seed + k x n_envs; every stage but the last ends with checkpoints/stage<k>_<opponents>_<step>.zip.",
+      "stages": [
+        {"opponents": "idle", "timesteps": null},
+        {"opponents": "noisy25", "timesteps": null},
+        {"opponents": "noisy10", "timesteps": null},
+        {"opponents": "rule", "timesteps": null}
+      ]
+    }
+  },
+  "evaluation": {"games": 200, "stochastic": false}
+}

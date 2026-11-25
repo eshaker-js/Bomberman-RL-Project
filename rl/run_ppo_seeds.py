@@ -121,8 +121,15 @@ def strip_comments(data):
 
 
 def _unset(data, path="") -> list:
+    """The dotted paths of every ``null`` in ``data``, inside objects and lists.
+
+    A list item's path uses its index (Task 11), e.g.
+    ``variants.curriculum.stages.0.timesteps``.
+    """
     if isinstance(data, dict):
         return [p for k, v in data.items() for p in _unset(v, f"{path}{k}.")]
+    if isinstance(data, list):
+        return [p for i, v in enumerate(data) for p in _unset(v, f"{path}{i}.")]
     return [path.rstrip(".")] if data is None else []
 
 
