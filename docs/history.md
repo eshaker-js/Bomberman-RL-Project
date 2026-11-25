@@ -13,7 +13,7 @@
 * **PPO is our main agent**, DQN comes later as the comparison (someone needs to claim it with a strong computer)
 * **I'm claiming PPO.** (if that's okay with you guys) I started it and the whole setup is already on my laptop, so I'd prefer to finish it. If someone else wants it, talk to me first and I'll walk you through exactly what I did so far, then we can swap
 * **Everything for the long PPO runs is in:** fixed evaluation seeds, one evaluation protocol, a runner for several seeds with confidence intervals, plots, and a benchmark
-* **Training runs on the GPU**, 2.6 times faster than the CPU on my laptop (GPU: GTX 3050 6GB)
+* **Training runs on the GPU**, 2.6 times faster than the CPU on my laptop (GPU: NVIDIA GeForce RTX 3050 6GB Laptop GPU)
 * **PPO learns to just stand still.** The first experiment (E2, 25 runs) tried two new reward terms, more exploration and harder opponents. None of them taught it to bomb. The only variant that wins anything (15% vs noisy25) wins by walking to the gate, not by fighting
 * **Next try is a curriculum:** training first against idle bots that never move, then harder ones. The code for it is merged
 
