@@ -2,6 +2,171 @@
 
 ## Next History entry goes here so older entries get pushed down, newest is on top.
 
+## 2026-11-25 Stage 2 of the project: PPO tools, GPU training, reward terms, curriculum and the first PPO experiment (Tasks 8 to 11, E2)
+
+**Author:** Basel Swaid  
+**Commits:** `60a5f16` (Task 8 part 1 seeds and evaluation) `9822855` (part 2 training options) `fed33d6` `eafb1e3` (part 3 benchmark) `43daca6` (part 4 runner and plots) `1a9d0b5` (merge PR #10) `41dff1d` (Task 9 part 1 device option) `f352de7` (part 2 GPU benchmark) `617db79` (part 3 README) `bbb1411` (merge PR #11) `8bbf5ee` (Task 10 part 1 reward terms) `7c88940` (part 2 reward logging and eval_opponents) `34e875b` (part 3 E2 plan) `9fe7cef` (merge PR #12) `b401ebe` (Task 11 part 1 idle bots) `df32476` (part 2 curriculum stages) `38de56c` (part 3 curriculum plan) `2e70bf0` (merge PR #13)  
+**Tests:** 633 passing (472 before + 161 new). 3 of them need an NVIDIA GPU and are skipped without one
+
+### Start here (the short version)
+* **The rules are final.** the game exactly as it is in the code
+* **PPO is our main agent**, DQN comes later as the comparison (someone needs to claim it with a strong computer)
+* **I'm claiming PPO.** (if that's okay with you guys) I started it and the whole setup is already on my laptop, so I'd prefer to finish it. If someone else wants it, talk to me first and I'll walk you through exactly what I did so far, then we can swap
+* **Everything for the long PPO runs is in:** fixed evaluation seeds, one evaluation protocol, a runner for several seeds with confidence intervals, plots, and a benchmark
+* **Training runs on the GPU**, 2.6 times faster than the CPU on my laptop (GPU: GTX 3050 6GB)
+* **PPO learns to just stand still.** The first experiment (E2, 25 runs) tried two new reward terms, more exploration and harder opponents. None of them taught it to bomb. The only variant that wins anything (15% vs noisy25) wins by walking to the gate, not by fighting
+* **Next try is a curriculum:** training first against idle bots that never move, then harder ones. The code for it is merged
+
+### Part 1: seeds and the evaluation protocol (Task 8)
+* `rl/seeds.py`: two seed ranges that **training never plays**. `EVAL_SEEDS` = 1,000,000 to 2,000,000 for the final evaluation, `TRAIN_EVAL_SEEDS` = 2,000,000 to 3,000,000 for the evaluation during training. If a training env draws one of them, it skips to the next seed (checked on 80,040 training games: 75 skipped)
+* `rl/eval_protocol.py`: every PPO run is evaluated the same way, against all 5 ladder levels, 200 games each, deterministic
+* **How the agent died**, in 6 classes: its own bomb, an opponent's bomb, or both, each from a fresh blast or from lingering flames
+* **Game length by outcome** (steps to death, to a win, to a timeout) instead of "survival time", which would always equal game length
+* Run folders now have microseconds in the name, so two runs started in the same second never clash
+
+### Part 2: training options (Task 8)
+* `rl/train_ppo.py` can evaluate during training (`eval_every`, `eval_games`) and writes `eval_curve.csv` as it goes, so a stopped run keeps every finished evaluation. The evaluation has its own env and random numbers, so it doesn't change what the run learns
+* Checkpoints every N steps, threads, dummy or subprocess envs, and high priority on Windows (`rl/priority.py`, it also keeps the laptop awake)
+
+### Part 3: the laptop benchmark (Task 8 and 9)
+* `python -m rl.benchmark_ppo --high-priority` measures how fast PPO trains on this computer and prints the best settings and the steps per seed for a night
+* Results on my laptop (i5-13500H, RTX 3050 6 GB, 23.11):
+
+  | | CPU | GPU |
+  |---|---|---|
+  | One run vs random bots | 399.3 steps/s | **1035.0** steps/s (1 thread, dummy) |
+  | One run vs rule bots | 365.9 | **703.6** (4 threads, subproc) |
+  | Several runs at once (total) | 445.2 (3 runs x 4 threads) | 977.6 for 1 run, 568.8 for 2, 410.9 for 3 |
+  | One 8-hour night, per seed | 2,017,280 | **5,349,376** |
+
+* On the CPU about 97% of training time is the network (the game alone runs at 11,873 steps/s), and the CPU reached 94°C and throttled. This is why we moved to the GPU
+* **On the GPU one run at a time is best.** 2 or 3 runs together are slower in total
+* 16 or 32 envs are slower than 8, so `n_envs` stays 8
+* Made a priority special thread that parses the reset info for the GPU so we can parse data much faster for it not to be a bottleneck  
+
+### Part 4: the runner and the plots (Task 8)
+* `python -m rl.run_ppo_seeds <plan.json>` trains every seed of every variant in a plan, evaluates each with the protocol and writes `summary.csv` and `aggregate.csv` with **95% confidence intervals**
+* `--continue runs/<plan folder>` finishes only what's left after a stop
+* `python -m rl.plot_ppo runs/<plan folder>` draws the learning curves (win rate, self-kills, game length)
+* A plan refuses to start while `total_timesteps` or `eval_every` is empty
+
+### Part 5: training on the GPU (Task 9)
+* `PPOConfig.device`: `"cpu"` (default, exactly as before) or `"cuda"`. Command line: `--device cuda`
+* Stable-Baselines3 silently falls back to the CPU when CUDA is missing. Ours **stops before anything starts** and says how to check the install
+* `meta.json` records the device actually used and the GPU
+* Only training uses the GPU. Evaluation and loading a saved model always run on the CPU
+* **GPU runs are not bit-identical**, not to CPU runs with the same seed and not between GPU reruns. Both are valid, this is why we compare means over seeds
+* The CUDA torch (2.15.0+cu132) is in **a separate environment outside the repo**, the project's `.venv` stays CPU only. The README has a section on setting it up
+
+### Part 6: the PPO pilot
+* PPO v0 against 3 random bots, 301,056 steps (23.11)
+* **It learned to wait.** The entropy fell to about 0.003 by 75k steps and games reached the 800-step limit by 125k
+* Why: always waiting survives 199 of 200 games against random bots and scores -0.80, a random agent dies after about 11 steps and scores about -1.02. Waiting is the best thing the v0 reward allows
+
+### Part 7: two new reward terms (Task 10)
+* `wait`: paid every step the agent WAITs, and when it presses BOMB but no bomb is placed (otherwise BOMB is a free way to wait)
+* `bomb_survived`: paid when the agent's own bombs explode, break crates and the agent is still alive. A bomb that breaks nothing pays nothing
+* **Both are 0 in v0**, so v0 trains exactly the same model as before
+* `progress.csv` now has one column per reward term (`reward_terms/<term>`), so we can see which term the agent actually collects
+* `eval_opponents`: who the evaluation during training plays, when it should differ from the training opponents
+* `experiments/ppo/e2_waiting.json`: the E2 plan
+
+### Part 8: experiment E2, can PPO get past waiting? (24.11 night)
+* 5 variants x 5 seeds x 999,424 steps on the GPU, each evaluated with the full protocol. Plan folder `runs/20261124-150712-251629_ppo-plan_seed0`, commit `9fe7cef`
+* Variants: **v0**, **shaped** (wait -0.002, bomb_survived 0.05), **explore** (entropy bonus 0.05 instead of 0.01), **shaped_explore** (both), **shaped_explore_noisy25** (both, trained against noisy25 bots)
+* 11 hours in total: 8.3 h training, 2.6 h evaluation
+* Results, mean over 5 seeds (win / loss / draw / timeout, %):
+
+  | Variant | vs random | vs noisy25 | vs noisy10 | vs rule |
+  |---|---|---|---|---|
+  | v0 | 0 / 0.1 / 1.1 / 98.8 | 0 / 42.6 / 4.9 / 52.5 | 0 / 92.2 / 1.1 / 6.7 | 0 / 100 / 0 / 0 |
+  | shaped | 0 / 0.8 / 1.0 / 98.2 | 0 / 45.9 / 3.6 / 50.5 | 0 / 92.6 / 0.7 / 6.7 | 0 / 100 / 0 / 0 |
+  | explore | 0 / 2.0 / 1.1 / 96.9 | 0 / 45.5 / 4.4 / 50.1 | 0 / 92.4 / 0.6 / 7.0 | 0 / 100 / 0 / 0 |
+  | shaped_explore | 0 / 3.3 / 2.3 / 94.4 | 0 / 49.2 / 3.3 / 47.5 | 0 / 90.8 / 0.7 / 8.5 | 0 / 100 / 0 / 0 |
+  | shaped_explore_noisy25 | 0 / 1.1 / 0.3 / 98.6 | **15.4** / 35.4 / 2.4 / 46.8 | **4.9** / 87.0 / 0.9 / 7.2 | 0 / 100 / 0 / 0 |
+
+* **No variant learned to bomb:** 0 kills everywhere, at most 0.019 crates per game
+* The shaped agents dodge the wait cost by walking back and forth instead of waiting
+* `bomb_survived` is almost never earned, the agent has to bomb by chance first
+* The noisy25 wins are passive: 0 crates and 0 kills, the agent walks to the gate after the bots blow each other up. Still the first variant that wins anything, and it came from harder opponents, not from the reward
+
+### Part 9: idle bots and curriculum stages (Task 11)
+* `agents/idle_bot.py`: **IdleBot** always WAITs. It's training only, never part of the ladder or an evaluation. Against it the agent can learn crates, kills and the gate win without being threatened
+* `PPOConfig.stages`: **one run trains one model through several stages** (for example idle, then noisy25, noisy10, rule), each for a fixed number of steps. The model keeps its weights, only the opponents change
+* Each stage gets new game seeds, ends with its own saved checkpoint, and is marked in `progress.csv` so the plots show where it starts
+* A run against idle bots must say who it's evaluated against, otherwise it refuses to start
+* `experiments/ppo/curriculum.json`: the curriculum plan. Stage lengths and the evaluation settings are still empty on purpose
+
+### Decisions I made
+
+- **Rules frozen exactly as coded**
+  - Why: every result from here on has to be on the same game
+  - Alternatives considered: flames 2 ticks with each buff adding one up to 4
+  - Status:
+
+- **PPO as the main algorithm, DQN as the comparison**
+  - Why: PPO fits our game best, DQN is the value-based method from the course so it makes a fair comparison
+  - Status: provisional (needs team OK)
+  - Not necessary: could be that DQN wins in performance and it would be our go to algorithm in the representation 
+
+- **Train on the GPU, evaluate on the CPU**
+  - Why: 2.6 times faster training, one exact evaluation for every model
+  - Status: provisional (needs team OK)
+
+- **The wait cost also counts a BOMB that places nothing**
+  - Why: otherwise BOMB is a free way to wait
+  - Status: provisional (needs team OK)
+
+- **bomb_survived only for bombs that break crates**
+  - Why: paying for any survived bomb would reward bombing empty corners
+  - Alternatives considered: paying per survived bomb
+  - Status: provisional (needs team OK)
+
+- **E2 at 1M steps per seed**
+  - Why: 25 runs fit in one night, and waiting shows up within the first 100k steps
+  - Status: provisional (needs team OK)
+
+- **Curriculum: idle bots first, all stages in one run, fixed steps per stage**
+  - Why: the agent can only learn to bomb if trying isn't punished right away, one run per seed keeps the comparison with E2 fair, fixed steps are the same for every seed
+  - Alternatives considered: moving on when a win rate is reached (seeds would train different amounts per stage)
+  - Status: provisional (needs team OK)
+
+### ANY OBJECTIONS ON:
+Please reply in the group if you disagree, otherwise these become team-agreed
+* The two new reward terms and their values
+* Not bit-identical results on the GPU
+* The curriculum with idle bots first
+
+### AI-assisted parts
+* Claude Code wrote all the code and the 161 new tests
+* The Claude supervisor wrote the specs, reviewed the plans, ran the pilot, and verified the result on its own:
+  * every patch applied to a fresh copy of `main` with the full test suite
+  * v0 on the CPU still trains the exact same model after Tasks 9, 10 and 11 (two seeds, every weight identical)
+  * the seed guard over 80,040 training games, the death classes and game lengths recounted from scratch with 0 mismatches
+  * the two new reward terms recounted independently over 1,100 games, 0 mismatches
+  * the E2 results recounted from the raw game files, 0 mismatches
+  * that `main` on GitHub has exactly the verified code after each merge
+* I made the design calls, ran the benchmarks and E2 on my laptop, and applied and merged the code
+
+### Open questions for the team
+* Confirm everything under "ANY OBJECTIONS ON"
+* **Where we train:** my laptop's GPU does one experiment per night. Jan's GPU is an option to start the DQN training, open to more options  (CUDA torch, tests, benchmark)
+* **DQN memory:** the default replay buffer of 1M observations is about 19 GB, it has to be cut to 100k to 200k
+* The stage 2 target (70% wins against 3 rule bots) is far: today everything loses 100% to rule bots
+
+### Next task for whoever picks this up
+
+**Open positions: DQN and the final report.** PPO is taken (me, see above), these two are free:
+ 
+**DQN training until it's done.** DQN is our comparison for PPO, so it should run on the same game, the same opponents and the same evaluation protocol (`rl/eval_protocol.py`, 5 levels x 200 games, `EVAL_SEEDS`). Start with a short run to see how fast it trains on your machine, cut the replay buffer (the default 1M observations is about 19 GB, 100k to 200k is 2 to 4 GB), and expect it to learn to wait too, like PPO did. The E2 results and the reward terms from Task 10 are there to reuse. It's done when DQN has 5 seeds evaluated with the protocol and logged in `docs/EXPERIMENTS.md`, so the report can compare it to PPO.
+ 
+**The final report.** This covers everything we hand in besides the code: the written report, the literature review, the presentation and the reproduction steps. Everything for it so far is in this file and in `docs/EXPERIMENTS.md`: the problem formulation (observation, actions, rewards in `rl/config.py`), the tabular results, the PPO pilot and E2. It needs an owner who starts the structure now and fills in the results as they come:
+* **The written report:** 8 to 20 pages (not counting references), Arial 12, 1.5 line spacing, one-inch margins. Sections from the guideline: Project Overview, Problem Formulation, Methodology (algorithms, implementation, hyperparameter tuning), Results (numbers and what the agent actually does), Discussion (comparison to existing work, limitations), Conclusion. Also a part on what's new in our approach (the opponent ladder, the curriculum with idle bots)
+* **The literature review:** why PPO and DQN fit our problem, backed by papers, and the existing work we compare to in the Discussion
+* **The presentation:** 15 minutes on 31.12 with slides, 10% of the grade. The spectator mode (after training) gives us the demo
+* **Reproduction steps:** a README section with the exact command for every result in the report, the filled plan files committed to `experiments/`, and the final models kept somewhere the team and the lecturer can reach
+* **AI use:** the guideline doesn't mention AI tools. Check the course site or ask Teddy how he wants it stated, since Claude Code wrote most of the code
+
 ## 2026-11-10 Stage 2, part 1: tabular Q-learning experiments on the tiny stage
 
 **Author:** Joelle  
