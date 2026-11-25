@@ -63,6 +63,7 @@ import time
 from pathlib import Path
 
 from rl.config import PPOConfig, apply_overrides, config_to_dict
+from rl.curriculum import check_stages
 from rl.devices import check_device
 from rl.eval_protocol import DEFAULT_GAMES, LEVELS
 from rl.evaluate_agent import DEATH_CAUSES
@@ -120,8 +121,15 @@ def strip_comments(data):
 
 
 def _unset(data, path="") -> list:
+    """The dotted paths of every ``null`` in ``data``, inside objects and lists.
+
+    A list item's path uses its index (Task 11), e.g.
+    ``variants.curriculum.stages.0.timesteps``.
+    """
     if isinstance(data, dict):
         return [p for k, v in data.items() for p in _unset(v, f"{path}{k}.")]
+    if isinstance(data, list):
+        return [p for i, v in enumerate(data) for p in _unset(v, f"{path}{i}.")]
     return [path.rstrip(".")] if data is None else []
 
 
@@ -156,6 +164,13 @@ def load_plan(text: str) -> dict:
     configs = {}
     for name, extra in variants.items():
         cfg = apply_overrides(apply_overrides(PPOConfig(), plan.get("config", {})), extra)
+        # Task 11: curriculum stages are checked now, for every seed, so a bad
+        # plan never starts (nothing to check for a variant without stages).
+        for seed in seeds:
+            try:
+                check_stages(cfg, seed)
+            except ValueError as error:
+                raise ValueError(f"variant {name}, seed {seed}: {error}") from None
         configs[name] = config_to_dict(cfg)
     return {"name": plan.get("name", "plan"), "seeds": seeds, "parallel": parallel,
             "variants": configs, "evaluation": evaluation}

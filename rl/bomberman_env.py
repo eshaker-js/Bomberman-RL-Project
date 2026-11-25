@@ -8,6 +8,9 @@ Opponents (``opponents=``):
 
 - a ladder level name from ``agents.noisy_bot.LADDER`` (``"random"``,
   ``"noisy50"``, ...): three fresh bots of that level play NPCs 1-3;
+- ``"idle"`` (Task 11), a training-only opponent from
+  ``agents.idle_bot.TRAINING_ONLY_OPPONENTS``: three bots that always WAIT.
+  It is not a ladder level, so the evaluation protocol never plays it;
 - a list of 1-3 controllers, any object with ``reset(seed)`` and
   ``act(state, me)`` (ladder bots now, frozen agents later): they play
   NPCs 1, 2, 3 in list order. The engine always has three NPCs, so **an NPC
@@ -32,6 +35,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from agents.idle_bot import TRAINING_ONLY_OPPONENTS
 from agents.match import bot_seed
 from agents.noisy_bot import LADDER, make_bot
 from game.environment import AGENT_ID, GAME_RULES, NPC_IDS, Action, BombermanEnv
@@ -48,6 +52,9 @@ MOVE_ACTIONS = frozenset({Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT})
 REWARD_TERMS = ("outcome", "kill", "crate", "per_step", "bump", "buff",
                 "wait", "bomb_survived")
 _SEED_BOUND = 2**31 - 1
+# Every opponent name training accepts (Task 11): the ladder levels, then the
+# training-only opponents. Evaluation accepts ladder levels only.
+TRAINING_OPPONENTS = (*LADDER, *TRAINING_ONLY_OPPONENTS)
 
 
 def resolve_opponents(opponents) -> tuple[bool, dict]:
@@ -55,9 +62,13 @@ def resolve_opponents(opponents) -> tuple[bool, dict]:
     if opponents is None:
         return False, {}
     if isinstance(opponents, str):
+        if opponents in TRAINING_ONLY_OPPONENTS:
+            factory = TRAINING_ONLY_OPPONENTS[opponents]
+            return True, {npc_id: factory() for npc_id in NPC_IDS}
         if opponents not in LADDER:
-            raise ValueError(f"unknown ladder level {opponents!r}; "
-                             f"choose from {list(LADDER)}")
+            raise ValueError(f"unknown opponents {opponents!r}; choose a ladder level "
+                             f"{list(LADDER)} or a training-only opponent "
+                             f"{list(TRAINING_ONLY_OPPONENTS)}")
         return True, {npc_id: make_bot(opponents) for npc_id in NPC_IDS}
     controllers = list(opponents)
     if not controllers:
