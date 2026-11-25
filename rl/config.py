@@ -68,7 +68,7 @@ class PPOConfig:
     """PPO (Stable-Baselines3) on the full-game wrapper (v0). See ``rl.train_ppo``."""
 
     total_timesteps: int = 10_000  # v0: smoke-run size; real runs override it
-    opponents: str = "random"  # v0: ladder level of the three NPCs
+    opponents: str = "random"  # v0: ladder level of the three NPCs, or "idle" (Task 11, training only)
     n_envs: int = 8  # v0: parallel envs (DummyVecEnv)
     n_steps: int = 256  # v0: steps per env per rollout (8 x 256 = 2048)
     batch_size: int = 256  # v0

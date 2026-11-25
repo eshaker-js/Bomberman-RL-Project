@@ -11,7 +11,8 @@ Values come from ``rl.config.PPOConfig`` (all v0), optionally overridden by
 a JSON file; the command-line options override single values on top
 (``--timesteps`` is ``total_timesteps``). Training uses ``n_envs`` copies of
 ``BombermanGymEnv`` (``GAME_RULES``, random crates, three NPCs of
-``PPOConfig.opponents``) on the CPU, and the small CNN of ``rl.networks``
+``PPOConfig.opponents``: a ladder level, or ``"idle"``, three bots that always
+WAIT, Task 11) on the CPU, and the small CNN of ``rl.networks``
 (on ``PPOConfig.device``, the CPU by default).
 Training never plays an evaluation seed (``rl.seeds``).
 
@@ -31,7 +32,8 @@ before they existed):
   older checkpoints)
 - ``eval_every``: every N steps (and at step 0 and at the end), the
   deterministic policy plays ``eval_games`` games against ``eval_opponents``
-  (Task 10; ``None``, the default, means the run's training opponents) on
+  (Task 10; ``None``, the default, means the run's training opponents;
+  a run against ``"idle"`` must set it to a ladder level) on
   the in-training evaluation seeds (``rl.seeds.TRAIN_EVAL_SEEDS``,
   the same seeds every time), with the run's ``env.max_steps``. One row per
   evaluation goes to ``eval_curve.csv`` and one row per game to
@@ -82,6 +84,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
+from agents.idle_bot import TRAINING_ONLY_OPPONENTS
 from agents.noisy_bot import LADDER
 from rl.bomberman_env import REWARD_TERMS, BombermanGymEnv
 from rl.config import EnvConfig, PPOConfig, config_to_dict, load_config
@@ -196,14 +199,23 @@ def eval_opponents(cfg: PPOConfig) -> str:
 
 
 def check_eval_opponents(cfg: PPOConfig) -> None:
-    """``ValueError`` unless ``eval_opponents`` is ``None`` or a ladder level.
+    """``ValueError`` unless the evaluation during training plays a ladder level.
 
-    Checked at the start of every run, even with ``eval_every = 0``, so a
-    typo is never silently ignored.
+    ``eval_opponents`` must be ``None`` or a ladder level. ``None`` falls back
+    to ``opponents``, which is refused when ``opponents`` is a training-only
+    opponent (Task 11: ``"idle"``): the evaluation never plays idle bots, so
+    such a run must name its ``eval_opponents``.
+
+    Checked at the start of every run (before its folder exists), even with
+    ``eval_every = 0``, so a typo is never silently ignored.
     """
     if cfg.eval_opponents is not None and cfg.eval_opponents not in LADDER:
         raise ValueError(f"unknown eval_opponents {cfg.eval_opponents!r}; "
                          f"choose from {list(LADDER)} or null (= opponents)")
+    if cfg.eval_opponents is None and cfg.opponents in TRAINING_ONLY_OPPONENTS:
+        raise ValueError(f"opponents {cfg.opponents!r} is a training-only opponent and "
+                         f"the evaluation during training never plays it: set "
+                         f"eval_opponents to a ladder level {list(LADDER)}")
 
 
 # The start of SB3's warning in OnPolicyAlgorithm._maybe_recommend_cpu.
@@ -464,6 +476,7 @@ def main(argv: list | None = None) -> Path:
     args = parse_args(argv)
     cfg = resolve_config(args)
     runtime = apply_runtime(cfg)
+    check_eval_opponents(cfg)  # before the run folder exists (again in make_model)
     run_dir = new_run_dir("ppo", args.seed, args.runs_dir)
     with RunLog(run_dir, "ppo", args.seed, config_to_dict(cfg),
                 argv=sys.argv if argv is None else ["-m", "rl.train_ppo", *argv]) as log:
