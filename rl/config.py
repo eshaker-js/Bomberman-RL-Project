@@ -64,6 +64,18 @@ class TabularConfig:
 
 
 @dataclass(frozen=True)
+class Stage:
+    """One curriculum stage (Task 11): train against ``opponents`` for ``timesteps`` steps.
+
+    ``opponents`` is a ladder level or ``"idle"``; ``timesteps`` is a whole
+    number of rollouts (``n_envs x n_steps``). See ``rl.curriculum``.
+    """
+
+    opponents: str
+    timesteps: int
+
+
+@dataclass(frozen=True)
 class PPOConfig:
     """PPO (Stable-Baselines3) on the full-game wrapper (v0). See ``rl.train_ppo``."""
 
@@ -102,6 +114,13 @@ class PPOConfig:
     # Lets a run that trains against noisy25 still draw its learning curve
     # against random bots, comparable with the other runs.
     eval_opponents: str | None = None
+    # Task 11: curriculum stages, trained in order by the same model in one
+    # run. Empty (default) = no stages, exactly the behaviour before. When
+    # set, the stages add up to ``total_timesteps``, the first stage's
+    # opponents equal ``opponents``, and ``eval_opponents`` must be set (all
+    # checked by ``rl.curriculum.check_stages``). In JSON: a list of
+    # ``{"opponents": ..., "timesteps": ...}`` objects.
+    stages: tuple[Stage, ...] = ()
 
 
 def config_to_dict(config) -> dict:
@@ -134,15 +153,48 @@ def apply_overrides(config, overrides: dict):
 
 # A field declared ``str | None`` (Task 10: ``PPOConfig.eval_opponents``).
 OPTIONAL_STR = str | None
+# A field declared as a tuple of stages (Task 11: ``PPOConfig.stages``).
+STAGES = tuple[Stage, ...]
+STAGE_KEYS = ("opponents", "timesteps")
+
+
+def _stages(key: str, value) -> tuple:
+    """``value`` (a list of stage objects, or ``Stage`` instances) as a tuple of ``Stage``.
+
+    Only the form is checked here (keys and types); whether the stages fit
+    the run (rollouts, total, opponents) is ``rl.curriculum.check_stages``.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"config key {key!r} expects a list of stages, got {value!r}")
+    stages = []
+    for index, stage in enumerate(value):
+        if isinstance(stage, Stage):
+            stage = dataclasses.asdict(stage)
+        if not isinstance(stage, dict):
+            raise TypeError(f"{key}[{index}] must be an object with keys "
+                            f"{list(STAGE_KEYS)}, got {stage!r}")
+        if set(stage) != set(STAGE_KEYS):
+            raise KeyError(f"{key}[{index}] needs exactly the keys {list(STAGE_KEYS)}, "
+                           f"got {sorted(stage)}")
+        opponents, timesteps = stage["opponents"], stage["timesteps"]
+        if not isinstance(opponents, str):
+            raise TypeError(f"{key}[{index}].opponents expects str, got {opponents!r}")
+        if isinstance(timesteps, bool) or not isinstance(timesteps, int):
+            raise TypeError(f"{key}[{index}].timesteps expects int, got {timesteps!r}")
+        stages.append(Stage(opponents, timesteps))
+    return tuple(stages)
 
 
 def _checked(key: str, current, value, declared=None):
     """``value`` converted to the type of ``current``, or ``TypeError``.
 
     A field declared ``str | None`` (``declared``) takes a string or ``None``
-    (JSON ``null``), whatever its current value; every other field is checked
-    against the type of its current value, as before.
+    (JSON ``null``), whatever its current value; a field declared as a tuple
+    of ``Stage`` takes a list of stages (``_stages``); every other field is
+    checked against the type of its current value, as before.
     """
+    if declared == STAGES:
+        return _stages(key, value)
     if declared == OPTIONAL_STR:
         if value is None or isinstance(value, str):
             return value

@@ -48,6 +48,23 @@ before they existed):
   load and evaluate on the CPU (``rl.evaluate_agent.PPOPolicy``). GPU runs
   are not bit-identical to CPU runs, nor guaranteed between GPU reruns.
 
+Curriculum stages (Task 11, ``PPOConfig.stages``, empty by default): the
+same model trains against each stage's opponents in order, each for its
+fixed ``timesteps``, in one run folder (see ``run_stages`` and
+``rl.curriculum``). Before anything is built, every stage is checked: whole
+rollouts, adding up to ``total_timesteps``, known opponents, ``opponents``
+equal to the first stage's, ``eval_opponents`` set, and no stage's envs on a
+reserved seed (stage ``k``'s envs are seeded with ``seed + k * n_envs``).
+The evaluation during training, the checkpoints and the outcome and reward
+term counts run on across stages. ``progress.csv`` gets a
+``curriculum/stage`` column, ``meta.json`` a ``stages`` list (start step,
+opponents, env seed and end-of-stage checkpoint of each stage), and every
+stage but the last ends with ``checkpoints/stage<k>_<opponents>_<step>.zip``.
+SB3's own ``time/iterations``, ``time/fps`` and ``time/time_elapsed``
+restart at each stage; ``time/total_timesteps`` does not. Without stages
+the run trains exactly as before; one stage trains exactly like the same
+run without stages.
+
 Each run writes a new folder ``runs/<time>_ppo_seed<seed>/`` with
 ``config.json``, ``meta.json``, ``progress.csv`` (SB3's logger, one row per
 rollout, including the cumulative episode outcomes), ``model.zip`` and the
@@ -88,6 +105,7 @@ from agents.idle_bot import TRAINING_ONLY_OPPONENTS
 from agents.noisy_bot import LADDER
 from rl.bomberman_env import REWARD_TERMS, BombermanGymEnv
 from rl.config import EnvConfig, PPOConfig, config_to_dict, load_config
+from rl.curriculum import check_stages, stage_seed
 from rl.devices import DEVICES, GPU_REPRODUCIBILITY, check_device, gpu_info
 from rl.eval_protocol import length_by_outcome
 from rl.evaluate_agent import (
@@ -150,6 +168,14 @@ class RewardTermLogger(BaseCallback):
     def _on_training_start(self) -> None:
         self.running = [dict.fromkeys(REWARD_TERMS, 0.0)
                         for _ in range(self.training_env.num_envs)]
+
+    def on_new_stage(self) -> None:
+        """A curriculum stage starts with new envs (Task 11): drop the running sums.
+
+        The old envs' unfinished episodes were cut off when they closed, so
+        they never finished and are not logged. Finished ones are kept.
+        """
+        self._on_training_start()
 
     def _on_step(self) -> bool:
         for i, (done, info) in enumerate(zip(self.locals["dones"], self.locals["infos"])):
@@ -222,24 +248,37 @@ def check_eval_opponents(cfg: PPOConfig) -> None:
 GPU_MLP_WARNING = r"You are trying to run PPO on the GPU"
 
 
+def make_envs(cfg: PPOConfig, opponents: str, seed: int):
+    """``n_envs`` training envs against ``opponents``, seeded with ``seed``.
+
+    ``seed`` must have passed ``check_training_seed`` (``make_model`` and
+    ``check_stages`` check it); every env skips drawn reserved seeds.
+    """
+    factory = EnvFactory(opponents, cfg.env, cfg.high_priority)
+    if cfg.vec_env == "subproc":
+        vec = {"vec_env_cls": SubprocVecEnv, "vec_env_kwargs": {"start_method": "spawn"}}
+    else:
+        vec = {"vec_env_cls": DummyVecEnv}
+    return make_vec_env(factory, n_envs=cfg.n_envs, seed=seed, **vec)
+
+
 def make_model(cfg: PPOConfig, seed: int) -> PPO:
     """The PPO model and its vectorised envs, seeded with ``seed``.
 
     Training never plays a game on an evaluation seed (``rl.seeds``): the run
     seed is checked first, and every env skips drawn reserved seeds. The
     device is checked before any env is built (``rl.devices.check_device``).
+    With stages (Task 11) the envs play the first stage's opponents, and
+    every stage is checked first (``rl.curriculum.check_stages``).
     """
     if cfg.vec_env not in VEC_ENVS:
         raise ValueError(f"vec_env must be one of {VEC_ENVS}, not {cfg.vec_env!r}")
     check_device(cfg.device)
     check_eval_opponents(cfg)
+    check_stages(cfg, seed)
     check_training_seed(seed, cfg.n_envs)
-    factory = EnvFactory(cfg.opponents, cfg.env, cfg.high_priority)
-    if cfg.vec_env == "subproc":
-        vec = {"vec_env_cls": SubprocVecEnv, "vec_env_kwargs": {"start_method": "spawn"}}
-    else:
-        vec = {"vec_env_cls": DummyVecEnv}
-    envs = make_vec_env(factory, n_envs=cfg.n_envs, seed=seed, **vec)
+    # With stages, opponents equals the first stage's (check_stages).
+    envs = make_envs(cfg, cfg.opponents, seed)
     policy_kwargs = {
         "features_extractor_class": SmallGridCNN,
         "features_extractor_kwargs": {"features_dim": cfg.features_dim,
@@ -438,6 +477,99 @@ class TrainingEvalCallback(BaseCallback):
         self.env.close()
 
 
+class StagedCallbacks(CallbackList):
+    """The run's callbacks, kept going across curriculum stages (Task 11).
+
+    Each stage is one ``model.learn(..., reset_num_timesteps=False)`` call,
+    and SB3 starts and ends the callbacks on every call. This list passes
+    ``on_training_start`` to its callbacks only in the first stage (so the
+    step-0 evaluation runs once) and ``on_training_end`` only after the
+    last stage (so the evaluator closes its files only at the end). At a
+    later stage start each callback gets the new call's locals and the
+    current step count, and ``on_new_stage()`` if it has one (the reward
+    term logger drops the cut-off episodes of the old envs). Every other
+    event goes to every callback, in order, as with a ``CallbackList``.
+    Counters, next evaluation and checkpoint steps carry on unchanged.
+
+    Each rollout row of ``progress.csv`` gets ``curriculum/stage``, the
+    index of the stage it belongs to. Nothing here draws random numbers.
+    """
+
+    def __init__(self, callbacks: list) -> None:
+        super().__init__(callbacks)
+        self.stage = 0
+        self.last_stage = True
+        self._started = False
+
+    def _on_training_start(self) -> None:
+        if not self._started:
+            self._started = True
+            super()._on_training_start()
+            return
+        for callback in self.callbacks:
+            callback.locals = self.locals
+            callback.globals = self.globals
+            callback.num_timesteps = self.model.num_timesteps
+            if hasattr(callback, "on_new_stage"):
+                callback.on_new_stage()
+
+    def _on_rollout_end(self) -> None:
+        self.logger.record("curriculum/stage", self.stage)
+        super()._on_rollout_end()
+
+    def _on_training_end(self) -> None:
+        if self.last_stage:
+            super()._on_training_end()
+
+
+def stage_checkpoint_name(index: int, opponents: str, timesteps: int) -> str:
+    """``stage<index>_<opponents>_<cumulative steps>.zip``, e.g. ``stage0_idle_2000000.zip``."""
+    return f"stage{index}_{opponents}_{timesteps}.zip"
+
+
+def run_stages(model: PPO, cfg: PPOConfig, seed: int, callback: StagedCallbacks,
+               run_dir: Path, meta: dict) -> None:
+    """Train ``model`` through ``cfg.stages`` in order (Task 11).
+
+    Stage 0 trains on the envs ``make_model`` built. Before each later
+    stage the old envs are closed first (so at most one set of env workers
+    exists), then new envs against the stage's opponents are built with
+    ``stage_seed`` and set on the model; SB3 then resets them with their
+    own seeds. Each stage trains exactly its ``timesteps`` (whole rollouts),
+    and the step count goes on across stages. At the end of every stage but
+    the last the model is saved as ``checkpoints/stage<k>_<opponents>_<step>.zip``
+    (never deleted by ``CheckpointKeeper``); the last stage ends in
+    ``model.zip``. ``meta["stages"]`` gets one entry per stage as it
+    starts, and ``meta.json`` is rewritten each time.
+    """
+    meta["stages"] = []
+    for index, stage in enumerate(cfg.stages):
+        env_seed = stage_seed(seed, index, cfg.n_envs)
+        if index > 0:
+            model.get_env().close()
+            model.set_env(make_envs(cfg, stage.opponents, env_seed))
+        entry = {"index": index, "opponents": stage.opponents, "timesteps": stage.timesteps,
+                 "start_step": int(model.num_timesteps), "env_seed": env_seed,
+                 "checkpoint": None}
+        meta["stages"].append(entry)
+        write_json(run_dir / "meta.json", meta)
+        callback.stage = index
+        callback.last_stage = index == len(cfg.stages) - 1
+        model.learn(total_timesteps=stage.timesteps, callback=callback,
+                    reset_num_timesteps=False)
+        if not callback.last_stage:
+            folder = run_dir / "checkpoints"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / stage_checkpoint_name(index, stage.opponents,
+                                                  int(model.num_timesteps))
+            if path.exists():
+                raise FileExistsError(f"{path} already exists; a checkpoint never "
+                                      f"overwrites a file")
+            model.save(path)
+            entry["checkpoint"] = path.relative_to(run_dir).as_posix()
+            write_json(run_dir / "meta.json", meta)
+
+
 def parse_args(argv: list | None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -476,7 +608,9 @@ def main(argv: list | None = None) -> Path:
     args = parse_args(argv)
     cfg = resolve_config(args)
     runtime = apply_runtime(cfg)
-    check_eval_opponents(cfg)  # before the run folder exists (again in make_model)
+    # Before the run folder exists (both again in make_model).
+    check_eval_opponents(cfg)
+    check_stages(cfg, args.seed)
     run_dir = new_run_dir("ppo", args.seed, args.runs_dir)
     with RunLog(run_dir, "ppo", args.seed, config_to_dict(cfg),
                 argv=sys.argv if argv is None else ["-m", "rl.train_ppo", *argv]) as log:
@@ -497,8 +631,11 @@ def main(argv: list | None = None) -> Path:
             if cfg.eval_every > 0:
                 evaluator = TrainingEvalCallback(cfg, run_dir)
                 callbacks.append(evaluator)
-            model.learn(total_timesteps=cfg.total_timesteps,
-                        callback=callbacks[0] if len(callbacks) == 1 else CallbackList(callbacks))
+            if not cfg.stages:
+                model.learn(total_timesteps=cfg.total_timesteps,
+                            callback=callbacks[0] if len(callbacks) == 1 else CallbackList(callbacks))
+            else:
+                run_stages(model, cfg, args.seed, StagedCallbacks(callbacks), run_dir, log.meta)
             model.save(run_dir / "model.zip")
             summary = {"timesteps": int(model.num_timesteps), "episodes": counter.counts}
             if evaluator is not None:
