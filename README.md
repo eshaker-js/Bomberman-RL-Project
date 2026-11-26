@@ -104,6 +104,14 @@ python -m rl.plot_ppo runs/<plan folder>
 
 Training and agent evaluation write a new folder in `runs/` (config, seed, git commit, metrics, model). `rl/config.py` holds every training value (all v0); any script takes `--config overrides.json`. `agents.ladder_eval` checks the opponent ladder, `agents.buff_eval` measures what each buff is worth to the rule bot.
 
+Two reward terms are 0 in v0: `wait` (per WAIT, or a BOMB that places nothing) and `bomb_survived` (per own bomb that broke at least one crate while the agent is alive). `progress.csv` has a `reward_terms/<term>` column per term (the mean per episode that finished in that rollout), plus `reward_terms/total` and `reward_terms/episodes`. `eval_opponents` is the ladder level of the evaluation during training, when it should differ from the training opponents.
+
+Curriculum: `stages` trains the same model against each stage's opponents in turn, each for a fixed number of steps (whole rollouts, adding up to `total_timesteps`). The first stage can be `"idle"`: three training-only bots that always wait, so such a run must set `eval_opponents`. Every stage but the last ends with `checkpoints/stage<k>_<opponents>_<step>.zip`. `experiments/ppo/curriculum.json` is the curriculum plan (idle, noisy25, noisy10, rule); set its `null` values first:
+
+```text
+python -m rl.run_ppo_seeds experiments/ppo/curriculum.json
+```
+
 ### Training on the GPU
 
 Training runs on the CPU unless you ask for the GPU (`PPOConfig.device`, `"cpu"` by default). Only training uses the GPU: evaluation and loading a saved model always run on the CPU, whichever device trained it.
@@ -125,6 +133,26 @@ python -m rl.train_ppo --timesteps 10000 --seed 0 --device cuda
 ```
 
 In a plan for `rl.run_ppo_seeds`, set `"device": "cuda"` in `config`. Asking for `cuda` when CUDA is not available stops before anything starts, with the checks above. `meta.json` records the device used and the GPU. GPU runs are not bit-identical to CPU runs with the same seed, and not guaranteed bit-identical between reruns on the GPU.
+
+### Continuing training from a saved model
+
+A run can start from the weights and optimizer state of a saved model (`model.zip` or any checkpoint) instead of fresh weights. Every other setting comes from the new run's config, so rewards, `ent_coef`, opponents or stages can change between pieces; only the network sizes (`conv_channels`, `features_dim`, `net_arch_pi`, `net_arch_vf`) must match, which is checked before anything starts. The new run gets its own folder and counts its steps from 0; `meta.json` records the source file, its SHA-256 and the step it was saved at. `env_seed_offset` shifts the seeds of the training games, so the next piece does not replay the same games:
+
+```json
+{"init_model": "runs/<run folder>/checkpoints/model_2000000.zip", "env_seed_offset": 1000, "ent_coef": 0.02}
+```
+
+```text
+python -m rl.train_ppo --config continue.json --seed 0
+```
+
+In a plan, `start_from` starts each seed from the same seed's model in an earlier plan folder. `file` is `"model"`, `"latest_checkpoint"`, `{"stage": k}` or `{"step": N}`; a stopped run's checkpoints work too:
+
+```json
+"start_from": {"plan_dir": "runs/<plan folder>", "variant": "curriculum", "file": "latest_checkpoint"}
+```
+
+Every seed's file is found and checked before the plan starts, `plan.json` records it, and `--continue` restarts from the same file. Paths in a plan file are relative to the repository root. Only load model files from your own runs (or from a teammate you trust): loading one unpickles it, which can run code.
 
 ## Tests
 
