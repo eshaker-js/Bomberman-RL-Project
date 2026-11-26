@@ -65,6 +65,23 @@ restart at each stage; ``time/total_timesteps`` does not. Without stages
 the run trains exactly as before; one stage trains exactly like the same
 run without stages.
 
+Starting from a saved model (Task 12, ``PPOConfig.init_model``, unset by
+default): the run builds its model from its own config as usual, then loads
+the weights and the optimizer state of a saved PPO model of this project (a
+``model.zip`` or any checkpoint) into it (``rl.init_model``). Every setting
+still comes from this run's config; only the network sizes must equal the
+saved model's. The file is checked before the run folder exists (it exists,
+is one of our PPO models, has the same network sizes and spaces), and right
+after loading every policy and optimizer tensor is compared with the file's.
+The run's steps start at 0 again; ``meta.json`` gets ``init_model``: the
+source's path, SHA-256, step count, run folder and seed (``None`` when the
+file lies outside a PPO run folder). The source folder is only read. Only
+load model files from your own runs: reading one unpickles it.
+``env_seed_offset`` (Task 12, 0 by default) is added to the training envs'
+seeds (stage ``k``: ``seed + env_seed_offset + k * n_envs``), so a continued
+run need not replay its source's games; the run seed, torch's seed and the
+folder name stay ``seed``.
+
 Each run writes a new folder ``runs/<time>_ppo_seed<seed>/`` with
 ``config.json``, ``meta.json``, ``progress.csv`` (SB3's logger, one row per
 rollout, including the cumulative episode outcomes), ``model.zip`` and the
@@ -114,6 +131,7 @@ from rl.evaluate_agent import (
     ModelPolicy,
     evaluate_seeds,
 )
+from rl.init_model import inspect_init_model, load_init_model
 from rl.networks import SmallGridCNN
 from rl.priority import raise_priority
 from rl.run_logging import RunLog, new_run_dir, write_json
@@ -262,6 +280,19 @@ def make_envs(cfg: PPOConfig, opponents: str, seed: int):
     return make_vec_env(factory, n_envs=cfg.n_envs, seed=seed, **vec)
 
 
+def env_seed(cfg: PPOConfig, seed: int) -> int:
+    """The first seed of the run's training envs: ``seed + env_seed_offset`` (Task 12).
+
+    Stage ``k``'s envs then use ``stage_seed(env_seed(cfg, seed), k, n_envs)``.
+    With the default offset 0 this is ``seed``, exactly as before.
+    """
+    if isinstance(cfg.env_seed_offset, bool) or not isinstance(cfg.env_seed_offset, int) \
+            or cfg.env_seed_offset < 0:
+        raise ValueError(f"env_seed_offset must be a whole number of at least 0, "
+                         f"not {cfg.env_seed_offset!r}")
+    return int(seed) + cfg.env_seed_offset
+
+
 def make_model(cfg: PPOConfig, seed: int) -> PPO:
     """The PPO model and its vectorised envs, seeded with ``seed``.
 
@@ -270,15 +301,21 @@ def make_model(cfg: PPOConfig, seed: int) -> PPO:
     device is checked before any env is built (``rl.devices.check_device``).
     With stages (Task 11) the envs play the first stage's opponents, and
     every stage is checked first (``rl.curriculum.check_stages``).
+
+    The training envs are seeded with ``env_seed(cfg, seed)`` (Task 12:
+    ``seed + env_seed_offset``); PPO itself (torch, the policy's first
+    weights) always with ``seed``. With ``init_model`` set, the caller loads
+    the saved weights afterwards (``rl.init_model.load_init_model``).
     """
     if cfg.vec_env not in VEC_ENVS:
         raise ValueError(f"vec_env must be one of {VEC_ENVS}, not {cfg.vec_env!r}")
     check_device(cfg.device)
     check_eval_opponents(cfg)
-    check_stages(cfg, seed)
-    check_training_seed(seed, cfg.n_envs)
+    first_env_seed = env_seed(cfg, seed)
+    check_stages(cfg, first_env_seed)
+    check_training_seed(first_env_seed, cfg.n_envs)
     # With stages, opponents equals the first stage's (check_stages).
-    envs = make_envs(cfg, cfg.opponents, seed)
+    envs = make_envs(cfg, cfg.opponents, first_env_seed)
     policy_kwargs = {
         "features_extractor_class": SmallGridCNN,
         "features_extractor_kwargs": {"features_dim": cfg.features_dim,
@@ -297,14 +334,21 @@ def make_model(cfg: PPOConfig, seed: int) -> PPO:
                    seed=seed, device=cfg.device, verbose=0)
 
     if cfg.device != "cuda":
-        return build()
-    # On the GPU, SB3 warns that PPO with "MlpPolicy" is meant for the CPU
-    # because it assumes an MLP feature extractor. It does not apply here:
-    # our features come from a CNN (SmallGridCNN). Only that one warning is
-    # ignored, and only while the model is built.
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=GPU_MLP_WARNING, category=UserWarning)
-        return build()
+        model = build()
+    else:
+        # On the GPU, SB3 warns that PPO with "MlpPolicy" is meant for the CPU
+        # because it assumes an MLP feature extractor. It does not apply here:
+        # our features come from a CNN (SmallGridCNN). Only that one warning is
+        # ignored, and only while the model is built.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=GPU_MLP_WARNING, category=UserWarning)
+            model = build()
+    if first_env_seed != seed:
+        # SB3's set_random_seed (in the constructor) has just set the envs'
+        # first reset seeds to seed + rank; with an offset (Task 12) they are
+        # set back to the shifted ones. Without an offset nothing is called.
+        envs.seed(first_env_seed)
+    return model
 
 
 
@@ -544,12 +588,12 @@ def run_stages(model: PPO, cfg: PPOConfig, seed: int, callback: StagedCallbacks,
     """
     meta["stages"] = []
     for index, stage in enumerate(cfg.stages):
-        env_seed = stage_seed(seed, index, cfg.n_envs)
+        seed_k = stage_seed(env_seed(cfg, seed), index, cfg.n_envs)
         if index > 0:
             model.get_env().close()
-            model.set_env(make_envs(cfg, stage.opponents, env_seed))
+            model.set_env(make_envs(cfg, stage.opponents, seed_k))
         entry = {"index": index, "opponents": stage.opponents, "timesteps": stage.timesteps,
-                 "start_step": int(model.num_timesteps), "env_seed": env_seed,
+                 "start_step": int(model.num_timesteps), "env_seed": seed_k,
                  "checkpoint": None}
         meta["stages"].append(entry)
         write_json(run_dir / "meta.json", meta)
@@ -608,9 +652,14 @@ def main(argv: list | None = None) -> Path:
     args = parse_args(argv)
     cfg = resolve_config(args)
     runtime = apply_runtime(cfg)
-    # Before the run folder exists (both again in make_model).
+    # Before the run folder exists (the first two again in make_model).
     check_eval_opponents(cfg)
-    check_stages(cfg, args.seed)
+    check_stages(cfg, env_seed(cfg, args.seed))
+    if cfg.env_seed_offset:
+        # Task 12: a shifted env seed is checked before the run folder exists.
+        # (Without an offset the run seed is checked in make_model, as before.)
+        check_training_seed(env_seed(cfg, args.seed), cfg.n_envs)
+    init_record = inspect_init_model(cfg)  # Task 12; None without init_model
     run_dir = new_run_dir("ppo", args.seed, args.runs_dir)
     with RunLog(run_dir, "ppo", args.seed, config_to_dict(cfg),
                 argv=sys.argv if argv is None else ["-m", "rl.train_ppo", *argv]) as log:
@@ -619,6 +668,14 @@ def main(argv: list | None = None) -> Path:
         model = make_model(cfg, args.seed)
         log.meta["runtime"].update(device_record(model))
         write_json(run_dir / "meta.json", log.meta)
+        try:
+            if init_record is not None:
+                load_init_model(model, init_record)
+                log.meta["init_model"] = init_record
+                write_json(run_dir / "meta.json", log.meta)
+        except BaseException:
+            model.get_env().close()
+            raise
         logger = configure(str(run_dir), ["csv"])
         model.set_logger(logger)
         evaluator = None

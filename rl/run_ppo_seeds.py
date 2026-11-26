@@ -69,6 +69,7 @@ from rl.eval_protocol import DEFAULT_GAMES, LEVELS
 from rl.evaluate_agent import DEATH_CAUSES
 from rl.priority import keep_awake
 from rl.run_logging import ROOT, dependency_versions, git_info, new_run_dir, utc_now, write_json
+from rl.train_ppo import env_seed
 
 # t(0.975, df) for df = 1 .. 30; above 30 the df=30 value is used (a little wide).
 T_975 = (12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
@@ -166,9 +167,10 @@ def load_plan(text: str) -> dict:
         cfg = apply_overrides(apply_overrides(PPOConfig(), plan.get("config", {})), extra)
         # Task 11: curriculum stages are checked now, for every seed, so a bad
         # plan never starts (nothing to check for a variant without stages).
+        # Task 12: on the envs' seeds, shifted by env_seed_offset (0 = seed).
         for seed in seeds:
             try:
-                check_stages(cfg, seed)
+                check_stages(cfg, env_seed(cfg, seed))
             except ValueError as error:
                 raise ValueError(f"variant {name}, seed {seed}: {error}") from None
         configs[name] = config_to_dict(cfg)
