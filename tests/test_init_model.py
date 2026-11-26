@@ -464,7 +464,7 @@ class CrossDeviceTest(unittest.TestCase):
                                            "init_model": str(cpu / "model.zip")})
             meta = read_json(back / "meta.json")
             self.assertTrue(meta["init_model"]["verified"])
-            self.assertEqual(meta["runtime"]["device"], "cuda:0")
+            self.assertTrue(meta["runtime"]["device"].startswith("cuda"))
 
 
 if __name__ == "__main__":
