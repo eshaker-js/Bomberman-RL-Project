@@ -45,6 +45,39 @@ Safe to leave running overnight:
 The summary and status files are rewritten from the run folders on every
 call; the run folders themselves are never changed.
 
+Starting from the models of an earlier plan (Task 12, ``start_from``): each
+seed of the new plan starts from the same seed's saved model in an earlier
+plan folder (``rl.init_model``; every setting still comes from the new
+plan). Set at the top of the plan for every variant, or per variant (the
+variant's own ``start_from`` wins)::
+
+    "start_from": {"plan_dir": "runs/<time>_ppo-plan_seed0",
+                   "variant": "curriculum",
+                   "file": "model"}
+
+``file`` is ``"model"`` (the run's ``model.zip``), ``"latest_checkpoint"``
+(the highest ``checkpoints/model_<steps>.zip``), ``{"stage": k}`` (the
+end-of-stage-``k`` checkpoint recorded in the run's ``meta.json``; the last
+stage has none, it ends in ``model.zip``) or ``{"step": N}``
+(``checkpoints/model_N.zip``). Relative paths in a plan (``plan_dir``, and
+an ``init_model`` set directly) are relative to the repository root, where
+every training process runs. In ``<plan_dir>/<variant>/seed<s>/`` the
+source run is the finished training run, else the newest attempt (a run
+stopped or crashed part-way keeps its checkpoints); several finished runs
+are ambiguous. If the chosen run lacks the file, the plan is refused and
+the other attempts that have it are named; an older attempt is never used
+silently. Every seed is resolved, and every file checked like
+``rl.train_ppo`` does (network sizes, spaces), **before anything starts**;
+all problems are listed at once. ``plan.json`` records the resolved file of
+every seed (``init_models``: path, SHA-256, step count, source run), each
+seed's ``config_overrides.json`` gets its ``init_model``, and
+``--continue`` never resolves again: a restarted run starts from the same
+file, and ``--continue`` refuses if that file is gone or its SHA-256
+changed. A variant may also set ``init_model`` directly (the same file for
+every seed, checked and recorded the same way), but not together with
+``start_from``. Only load model files from your own runs: reading one
+unpickles it.
+
 Confidence interval: ``mean +- t(0.975, n - 1) * s / sqrt(n)`` over the
 ``n`` training seeds, with the sample standard deviation ``s`` and the
 Student-t quantiles of ``T_975`` (standard t table, e.g. NIST/SEMATECH
@@ -53,9 +86,11 @@ e-Handbook of Statistical Methods, table 1.3.6.7.2).
 
 import argparse
 import csv
+import dataclasses
 import hashlib
 import json
 import math
+import re
 import statistics
 import subprocess
 import sys
@@ -67,6 +102,7 @@ from rl.curriculum import check_stages
 from rl.devices import check_device
 from rl.eval_protocol import DEFAULT_GAMES, LEVELS
 from rl.evaluate_agent import DEATH_CAUSES
+from rl.init_model import file_sha256, inspect_init_model
 from rl.priority import keep_awake
 from rl.run_logging import ROOT, dependency_versions, git_info, new_run_dir, utc_now, write_json
 from rl.train_ppo import env_seed
@@ -139,7 +175,8 @@ def load_plan(text: str) -> dict:
     plan = strip_comments(json.loads(text))
     if not isinstance(plan, dict):
         raise ValueError("a plan file holds one JSON object")
-    unknown = set(plan) - {"name", "seeds", "parallel", "config", "variants", "evaluation"}
+    unknown = set(plan) - {"name", "seeds", "parallel", "config", "variants", "evaluation",
+                           "start_from"}
     if unknown:
         raise ValueError(f"unknown plan keys {sorted(unknown)}")
     seeds = plan.get("seeds")
@@ -157,14 +194,26 @@ def load_plan(text: str) -> dict:
             raise ValueError(f"variant name {name!r} cannot be a folder name")
     missing = _unset(plan.get("config", {}), "config.") + [
         p for name, extra in variants.items() for p in _unset(extra, f"variants.{name}.")]
+    if "start_from" in plan:
+        missing += _unset(plan["start_from"], "start_from.")
     if missing:
         raise ValueError(f"set these plan values first (they are null): {missing}")
     evaluation = {"games": DEFAULT_GAMES, "stochastic": False, **plan.get("evaluation", {})}
     if set(evaluation) - {"games", "stochastic"}:
         raise ValueError("evaluation takes only games and stochastic")
-    configs = {}
+    configs, starts = {}, {}
     for name, extra in variants.items():
+        # Task 12: start_from is a plan key, not a PPOConfig field.
+        spec = plan.get("start_from")
+        if isinstance(extra, dict) and "start_from" in extra:
+            extra = dict(extra)
+            spec = extra.pop("start_from")
         cfg = apply_overrides(apply_overrides(PPOConfig(), plan.get("config", {})), extra)
+        if spec is not None:
+            starts[name] = check_start_from(spec, f"variant {name}")
+            if cfg.init_model is not None:
+                raise ValueError(f"variant {name}: set either init_model or start_from, "
+                                 f"not both")
         # Task 11: curriculum stages are checked now, for every seed, so a bad
         # plan never starts (nothing to check for a variant without stages).
         # Task 12: on the envs' seeds, shifted by env_seed_offset (0 = seed).
@@ -174,8 +223,175 @@ def load_plan(text: str) -> dict:
             except ValueError as error:
                 raise ValueError(f"variant {name}, seed {seed}: {error}") from None
         configs[name] = config_to_dict(cfg)
-    return {"name": plan.get("name", "plan"), "seeds": seeds, "parallel": parallel,
-            "variants": configs, "evaluation": evaluation}
+    checked = {"name": plan.get("name", "plan"), "seeds": seeds, "parallel": parallel,
+               "variants": configs, "evaluation": evaluation}
+    if starts:
+        checked["start_from"] = starts
+    return checked
+
+
+# ------------------------------------------------------------------ start_from (Task 12)
+
+START_KEYS = ("plan_dir", "variant", "file")
+CHECKPOINT_NAME = re.compile(r"model_(\d+)\.zip")
+
+
+def _whole(value, least: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= least
+
+
+def check_start_from(spec, where: str) -> dict:
+    """The checked form of one ``start_from`` object (``ValueError`` otherwise)."""
+    if not isinstance(spec, dict) or set(spec) != set(START_KEYS):
+        raise ValueError(f"{where}: start_from needs exactly the keys {list(START_KEYS)}, "
+                         f"got {spec!r}")
+    for key in ("plan_dir", "variant"):
+        if not isinstance(spec[key], str) or not spec[key]:
+            raise ValueError(f"{where}: start_from.{key} must be a non-empty string")
+    which = spec["file"]
+    if not (which in ("model", "latest_checkpoint")
+            or (isinstance(which, dict) and list(which) == ["stage"] and _whole(which["stage"], 0))
+            or (isinstance(which, dict) and list(which) == ["step"] and _whole(which["step"], 1))):
+        raise ValueError(f'{where}: start_from.file must be "model", "latest_checkpoint", '
+                         f'{{"stage": k}} (k >= 0) or {{"step": N}} (N >= 1), got {which!r}')
+    return dict(spec)
+
+
+def repo_path(path: str) -> Path:
+    """``path``, relative paths taken from the repository root (where training runs)."""
+    path = Path(path)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def file_in_run(run: Path, which) -> tuple:
+    """``(path, None)`` of the requested file in one training run, or ``(None, problem)``."""
+    if which == "model":
+        path = run / "model.zip"
+        return (path, None) if path.is_file() else (None, f"{run.name} has no model.zip")
+    if which == "latest_checkpoint":
+        steps = [int(m.group(1)) for p in (run / "checkpoints").glob("model_*.zip")
+                 if (m := CHECKPOINT_NAME.fullmatch(p.name)) and p.is_file()]
+        if not steps:
+            return None, f"{run.name} has no checkpoints/model_<steps>.zip"
+        return run / "checkpoints" / f"model_{max(steps)}.zip", None
+    if "step" in which:
+        path = run / "checkpoints" / f"model_{which['step']}.zip"
+        return ((path, None) if path.is_file()
+                else (None, f"{run.name} has no checkpoints/{path.name}"))
+    index = which["stage"]
+    config = _read_json(run / "config.json") or {}
+    count = len(config.get("stages") or [])
+    if count == 0:
+        return None, f"{run.name} is not a run with stages"
+    if index >= count:
+        return None, f"{run.name} has only {count} stages (0 to {count - 1})"
+    if index == count - 1:
+        return None, (f"stage {index} is the last stage of {run.name}; it ends in "
+                      f'model.zip, not a stage checkpoint: use "file": "model"')
+    stages = (_read_json(run / "meta.json") or {}).get("stages") or []
+    entry = stages[index] if index < len(stages) else None
+    if not entry or not entry.get("checkpoint"):
+        return None, f"stage {index} of {run.name} did not finish (no stage checkpoint)"
+    path = run / entry["checkpoint"]
+    return ((path, None) if path.is_file()
+            else (None, f"{run.name}: {entry['checkpoint']} is missing"))
+
+
+def find_source_file(plan_dir: Path, variant: str, seed: int, which) -> tuple:
+    """``(path, None)`` of one seed's source file in an earlier plan, or ``(None, problem)``.
+
+    The source run of ``<plan_dir>/<variant>/seed<seed>/`` is its finished
+    training run (the one ``status.csv`` lists), else its newest attempt;
+    more than one finished run is ambiguous. If that run lacks the file, the
+    problem names the other attempts that have it; none is used instead.
+    """
+    if not (plan_dir / "plan.json").is_file():
+        return None, f"{plan_dir} is not a plan folder (no plan.json)"
+    job_dir = plan_dir / variant / f"seed{seed}"
+    attempts = sorted(p for p in job_dir.glob(f"*_ppo_seed{seed}") if p.is_dir())
+    if not attempts:
+        return None, f"no training run in {job_dir}"
+    done = [p for p in attempts if _finished(p, "model.zip")]
+    if len(done) > 1:
+        return None, (f"ambiguous: {len(done)} finished training runs in {job_dir}: "
+                      f"{[p.name for p in done]}")
+    run = done[0] if done else attempts[-1]
+    path, problem = file_in_run(run, which)
+    if problem is None:
+        return path, None
+    others = [a.name for a in attempts if a != run and file_in_run(a, which)[0] is not None]
+    if others:
+        problem += f"; other attempts that have it (not used): {others}"
+    return None, f"{problem} (in {job_dir})"
+
+
+def resolve_init_models(plan: dict) -> dict:
+    """``{variant: {seed: record}}``: the checked source file of every seed (Task 12).
+
+    For variants with ``start_from`` (``find_source_file``) or ``init_model``.
+    Each file goes through ``rl.init_model.inspect_init_model`` with that
+    variant's config. Every problem is collected; if there is any, one
+    ``ValueError`` lists them all. Nothing is written.
+    """
+    problems, resolved = [], {}
+    starts = plan.get("start_from", {})
+    for name, config in plan["variants"].items():
+        spec, direct = starts.get(name), config.get("init_model")
+        if spec is None and direct is None:
+            continue
+        cfg = apply_overrides(PPOConfig(), config)
+        for seed in plan["seeds"]:
+            where = f"variant {name}, seed {seed}"
+            if spec is not None:
+                path, problem = find_source_file(repo_path(spec["plan_dir"]).resolve(),
+                                                 spec["variant"], seed, spec["file"])
+                if problem is not None:
+                    problems.append(f"{where}: {problem}")
+                    continue
+            else:
+                path = repo_path(direct)
+            try:
+                record = inspect_init_model(dataclasses.replace(cfg, init_model=str(path)))
+            except ValueError as error:
+                problems.append(f"{where}: {error}")
+                continue
+            entry = {"path": record["absolute_path"], "sha256": record["sha256"],
+                     "num_timesteps": record["num_timesteps"],
+                     "source_run_dir": record["source_run_path"],
+                     "source_seed": record["source_seed"]}
+            entry.update({"start_from": spec} if spec is not None else {"init_model": direct})
+            resolved.setdefault(name, {})[str(seed)] = entry
+    if problems:
+        raise ValueError("cannot start this plan from saved models; nothing was started:\n"
+                         + "\n".join(f"- {p}" for p in problems))
+    return resolved
+
+
+def check_init_models(plan_dir: Path, plan: dict, init_models: dict) -> list:
+    """Problems with the recorded source files of the runs ``--continue`` will train.
+
+    A seed whose training already finished needs its file no more; every
+    other one must still exist with the SHA-256 recorded in ``plan.json``.
+    """
+    problems = []
+    for name, seeds in init_models.items():
+        for seed, entry in seeds.items():
+            if finished_training(plan_dir / name / f"seed{seed}", int(seed)) is not None:
+                continue
+            path = Path(entry["path"])
+            if not path.is_file():
+                problems.append(f"variant {name}, seed {seed}: {path} is gone")
+            elif file_sha256(path) != entry["sha256"]:
+                problems.append(f"variant {name}, seed {seed}: {path} changed since the plan "
+                                f"started (SHA-256 differs)")
+    return problems
 
 
 def plan_hash(text: str) -> str:
@@ -214,11 +430,14 @@ def finished_eval(job_dir: Path, run_dir: Path) -> Path | None:
 class Job:
     """One (variant, seed): train, then evaluate, each in its own process."""
 
-    def __init__(self, plan_dir: Path, plan: dict, variant: str, seed: int) -> None:
+    def __init__(self, plan_dir: Path, plan: dict, variant: str, seed: int,
+                 init_model: str | None = None) -> None:
         self.plan_dir = plan_dir
         self.variant = variant
         self.seed = seed
         self.config = plan["variants"][variant]
+        if init_model is not None:  # Task 12: this seed's resolved source file
+            self.config = {**self.config, "init_model": init_model}
         self.evaluation = plan["evaluation"]
         self.dir = plan_dir / variant / f"seed{seed}"
         self.status = "pending"
@@ -327,9 +546,16 @@ def write_status(plan_dir: Path, jobs: list) -> None:
     write_csv(plan_dir / "status.csv", STATUS_FIELDS, rows)
 
 
-def run_jobs(plan_dir: Path, plan: dict, quiet: bool = False) -> list:
-    """Run every unfinished job, ``plan["parallel"]`` processes at a time."""
-    jobs = [Job(plan_dir, plan, v, s) for v in plan["variants"] for s in plan["seeds"]]
+def run_jobs(plan_dir: Path, plan: dict, quiet: bool = False,
+             init_models: dict | None = None) -> list:
+    """Run every unfinished job, ``plan["parallel"]`` processes at a time.
+
+    ``init_models`` (Task 12): the resolved source file of each seed, from
+    ``plan.json``; ``None`` or empty for a plan that starts from scratch.
+    """
+    init_models = init_models or {}
+    jobs = [Job(plan_dir, plan, v, s, init_models.get(v, {}).get(str(s), {}).get("path"))
+            for v in plan["variants"] for s in plan["seeds"]]
     for job in jobs:
         job.refresh()
     queue = [j for j in jobs if j.status != "done"]
@@ -467,6 +693,11 @@ def main(argv: list | None = None) -> Path:
                          f"instead (the saved copy is in {plan_dir / 'plan.json'})")
         plan = load_plan(text)
         _check_devices(parser, plan)
+        # Task 12: the files resolved when the plan started, never resolved again.
+        init_models = saved.get("init_models", {})
+        problems = check_init_models(plan_dir, plan, init_models)
+        if problems:
+            parser.error("cannot continue this plan:\n" + "\n".join(f"- {p}" for p in problems))
     else:
         text = Path(args.plan).read_text(encoding="utf-8")
         try:
@@ -474,18 +705,25 @@ def main(argv: list | None = None) -> Path:
         except (ValueError, KeyError, TypeError) as error:
             parser.error(str(error))
         _check_devices(parser, plan)
+        try:
+            init_models = resolve_init_models(plan)  # Task 12; {} without saved models
+        except ValueError as error:
+            parser.error(str(error))
         plan_dir = new_run_dir("ppo-plan", plan["seeds"][0], args.runs_dir)
-        write_json(plan_dir / "plan.json", {
+        record = {
             "kind": "ppo-plan", "plan_file": str(Path(args.plan).resolve()),
             "sha256": plan_hash(text), "plan_text": text, "plan": plan,
             "command": [sys.executable, "-m", "rl.run_ppo_seeds",
                         *(sys.argv[1:] if argv is None else argv)],
-            "git": git_info(), "versions": dependency_versions(), "created_at": utc_now()})
+            "git": git_info(), "versions": dependency_versions(), "created_at": utc_now()}
+        if init_models:
+            record["init_models"] = init_models
+        write_json(plan_dir / "plan.json", record)
 
     with keep_awake() as awake:
         if not args.quiet:
             print(f"plan folder: {plan_dir}\n{awake}")
-        jobs = run_jobs(plan_dir, plan, quiet=args.quiet)
+        jobs = run_jobs(plan_dir, plan, quiet=args.quiet, init_models=init_models)
     _, aggregate = summarize(plan_dir, jobs)
     if not args.quiet:
         print()
