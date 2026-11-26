@@ -121,6 +121,18 @@ class PPOConfig:
     # checked by ``rl.curriculum.check_stages``). In JSON: a list of
     # ``{"opponents": ..., "timesteps": ...}`` objects.
     stages: tuple[Stage, ...] = ()
+    # Task 12: start training from the weights and optimizer state of a saved
+    # PPO model (a run's model.zip or any of its checkpoints). None (default)
+    # = fresh weights, exactly the behaviour before. Every other setting of
+    # the run still comes from this config; the network sizes above must
+    # equal the saved model's. See ``rl.init_model``. Only load model files
+    # from your own runs: reading a saved model unpickles it.
+    init_model: str | None = None
+    # Task 12: added to the seeds of the training envs only (every stage's),
+    # so a continued run need not replay its source's games. The run seed,
+    # torch's seed and the folder name stay ``seed``. 0 (default) = exactly
+    # the behaviour before.
+    env_seed_offset: int = 0
 
 
 def config_to_dict(config) -> dict:
