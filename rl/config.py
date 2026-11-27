@@ -138,6 +138,13 @@ class PPOConfig:
     # equal the saved model's. See ``rl.init_model``. Only load model files
     # from your own runs: reading a saved model unpickles it.
     init_model: str | None = None
+    # Task 14: let ``init_model`` cross between the two kinds of model, a
+    # MaskablePPO model (trained with ``env.action_mask`` on) into a plain
+    # PPO run and the other way round. The weights have the same layout; the
+    # filter only changes how actions are picked. False (default) = such a
+    # start is refused, exactly the behaviour before. Has no effect without
+    # ``init_model``. See ``rl.init_model``.
+    init_model_convert: bool = False
     # Task 12: added to the seeds of the training envs only (every stage's),
     # so a continued run need not replay its source's games. The run seed,
     # torch's seed and the folder name stay ``seed``. 0 (default) = exactly

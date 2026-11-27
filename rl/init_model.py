@@ -33,6 +33,17 @@ a plain PPO model only in an unmasked one: crossing kinds is refused before
 anything is built. (The danger map changes the observation space, which the
 space check already refuses.)
 
+Task 14: with ``init_model_convert`` on, crossing kinds is allowed (a
+filter-trained agent continuing without the filter, or the other way
+round). Every other check still applies. Both policies hold the same
+networks with the same parameter names, so the weights and the optimizer
+state load unchanged and are verified the same way; only how actions are
+picked changes. Under the filter the masked actions got no training signal,
+so a converted policy may at first pick moves the filter used to hide. The
+record says which kind the file was (``source_algorithm``, also the older
+``algorithm`` field), which kind this run trains (``run_algorithm``), and
+whether it was converted (``converted``).
+
 The optimizer state is always loaded, so Adam's running moments carry on.
 The new ``learning_rate`` still applies: PPO sets it in the optimizer at the
 start of every update (SB3's ``_update_learning_rate``). The step count of
@@ -173,11 +184,12 @@ def inspect_init_model(cfg) -> dict | None:
             or any(k not in data for k in PPO_KEYS):
         raise _not_ours(path, "it is not a PPO model with SB3's actor-critic policy")
     run_masked = cfg.env.action_mask != "off"
-    if is_masked != run_masked:
+    if is_masked != run_masked and not cfg.init_model_convert:
         kinds = {True: "MaskablePPO (safety filter on)", False: "PPO (safety filter off)"}
         raise ValueError(f"init_model {path}: the saved model is {kinds[is_masked]} but "
                          f"this run is {kinds[run_masked]} (env.action_mask "
-                         f"{cfg.env.action_mask!r}); a model only continues with the same kind")
+                         f"{cfg.env.action_mask!r}); a model only continues with the same kind "
+                         f"(set init_model_convert to true to convert it on purpose)")
 
     saved = _zip_network(path, data)
     wrong = _mismatches(saved, network_sizes(cfg))
@@ -216,6 +228,9 @@ def inspect_init_model(cfg) -> dict | None:
             "source_init_model": source["source_init_model"],
             "sb3_version": _sb3_version(path), "network": saved,
             "algorithm": "MaskablePPO" if is_masked else "PPO",
+            "source_algorithm": "MaskablePPO" if is_masked else "PPO",
+            "run_algorithm": "MaskablePPO" if run_masked else "PPO",
+            "converted": is_masked != run_masked,
             "optimizer_loaded": True, "verified": False}
 
 
