@@ -41,6 +41,7 @@ from agents.noisy_bot import LADDER, make_bot
 from game.environment import AGENT_ID, GAME_RULES, NPC_IDS, Action, BombermanEnv
 from rl.config import EnvConfig, RewardConfig
 from rl.danger import N_DANGER_CHANNELS, danger_planes
+from rl.safety import action_mask, check_mask_mode
 from rl.observation import OBS_SHAPE, encode_observation
 
 # Discrete action index -> engine action, in the order of the Action enum:
@@ -193,6 +194,9 @@ class BombermanGymEnv(gym.Env):
 
     With ``config.danger_obs`` (Task 13) the observation also has the two
     danger planes of ``rl.danger`` (channels 20 and 21).
+    ``action_masks()`` (Task 13) gives the actions the safety filter of
+    ``config.action_mask`` allows in the current state (``rl.safety``);
+    with ``"off"`` (default) all of them, and nothing calls it.
     """
 
     metadata = {"render_modes": []}
@@ -200,6 +204,7 @@ class BombermanGymEnv(gym.Env):
     def __init__(self, opponents="random", config: EnvConfig | None = None) -> None:
         super().__init__()
         self.config = config if config is not None else EnvConfig()
+        check_mask_mode(self.config.action_mask)
         with_npcs, self.controllers = resolve_opponents(opponents)
         self.engine = BombermanEnv(with_npcs=with_npcs, random_crates=True, **GAME_RULES)
         self.action_space = spaces.Discrete(len(ACTIONS))
@@ -245,6 +250,10 @@ class BombermanGymEnv(gym.Env):
             "reward_terms": terms,
         }
         return self._observe(state), reward, terminated, truncated, info
+
+    def action_masks(self) -> np.ndarray:
+        """The allowed actions now (6 booleans in ``ACTIONS`` order), for ``MaskablePPO``."""
+        return action_mask(self._state, AGENT_ID, self.config.action_mask)
 
     def _observe(self, state: dict) -> np.ndarray:
         """The agent's observation: v1, plus the danger planes when ``danger_obs`` is on."""

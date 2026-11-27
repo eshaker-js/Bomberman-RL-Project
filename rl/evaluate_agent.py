@@ -70,17 +70,29 @@ class ModelPolicy:
 
     ``deterministic=True`` (the default) takes the most likely action;
     ``False`` samples from the policy, using torch's global RNG.
+
+    ``action_mask`` (Task 13): a safety filter mode of ``rl.safety`` for a
+    ``MaskablePPO`` model; the mask is computed from ``state`` and passed to
+    ``predict``. ``None`` or ``"off"`` (default): exactly the call before.
     """
 
-    def __init__(self, model, deterministic: bool = True) -> None:
+    def __init__(self, model, deterministic: bool = True,
+                 action_mask: str | None = None) -> None:
         self.model = model
         self.deterministic = deterministic
+        self.action_mask = None if action_mask == "off" else action_mask
 
     def reset(self) -> None:
         pass
 
     def act(self, obs, state: dict) -> int:
-        action, _ = self.model.predict(obs, deterministic=self.deterministic)
+        if self.action_mask is None:
+            action, _ = self.model.predict(obs, deterministic=self.deterministic)
+        else:
+            from rl.safety import action_mask
+            masks = action_mask(state, AGENT_ID, self.action_mask)
+            action, _ = self.model.predict(obs, deterministic=self.deterministic,
+                                           action_masks=masks)
         return int(action)
 
 

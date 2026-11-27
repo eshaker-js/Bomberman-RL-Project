@@ -26,6 +26,13 @@ Two steps, used by ``rl.train_ppo.main``:
    continues on ``cpu`` and the other way round), and every policy and
    optimizer tensor is compared with the file's at once.
 
+Task 13: a run with the safety filter (``env.action_mask`` on) is a
+``MaskablePPO`` run, and its saved models use sb3-contrib's maskable
+actor-critic policy. Such a model only continues in another masked run, and
+a plain PPO model only in an unmasked one: crossing kinds is refused before
+anything is built. (The danger map changes the observation space, which the
+space check already refuses.)
+
 The optimizer state is always loaded, so Adam's running moments carry on.
 The new ``learning_rate`` still applies: PPO sets it in the optimizer at the
 start of every update (SB3's ``_update_learning_rate``). The step count of
@@ -122,6 +129,19 @@ def source_run_info(path) -> dict:
             "config": config}
 
 
+def _is_maskable_policy(policy_class) -> bool:
+    """Whether ``policy_class`` is sb3-contrib's maskable actor-critic policy (Task 13).
+
+    Without sb3-contrib installed no saved model can have it (such a zip
+    could not even be read), so it is ``False``.
+    """
+    try:
+        from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
+    except ImportError:
+        return False
+    return policy_class is MaskableActorCriticPolicy
+
+
 def _sb3_version(path: Path) -> str | None:
     with zipfile.ZipFile(path) as archive:
         try:
@@ -147,8 +167,17 @@ def inspect_init_model(cfg) -> dict | None:
         raise _not_ours(path, f"it cannot be read as an SB3 model ({error})") from error
     if not isinstance(data, dict) or set(params or {}) != MODEL_PARAMS:
         raise _not_ours(path, f"it must hold exactly the parameters {sorted(MODEL_PARAMS)}")
-    if data.get("policy_class") is not ActorCriticPolicy or any(k not in data for k in PPO_KEYS):
+    policy_class = data.get("policy_class")
+    is_masked = _is_maskable_policy(policy_class)
+    if (policy_class is not ActorCriticPolicy and not is_masked) \
+            or any(k not in data for k in PPO_KEYS):
         raise _not_ours(path, "it is not a PPO model with SB3's actor-critic policy")
+    run_masked = cfg.env.action_mask != "off"
+    if is_masked != run_masked:
+        kinds = {True: "MaskablePPO (safety filter on)", False: "PPO (safety filter off)"}
+        raise ValueError(f"init_model {path}: the saved model is {kinds[is_masked]} but "
+                         f"this run is {kinds[run_masked]} (env.action_mask "
+                         f"{cfg.env.action_mask!r}); a model only continues with the same kind")
 
     saved = _zip_network(path, data)
     wrong = _mismatches(saved, network_sizes(cfg))
@@ -186,6 +215,7 @@ def inspect_init_model(cfg) -> dict | None:
             "source_seed": source["source_seed"],
             "source_init_model": source["source_init_model"],
             "sb3_version": _sb3_version(path), "network": saved,
+            "algorithm": "MaskablePPO" if is_masked else "PPO",
             "optimizer_loaded": True, "verified": False}
 
 
