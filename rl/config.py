@@ -45,6 +45,11 @@ class EnvConfig:
 
     max_steps: int = 800  # v0: truncation limit, in engine steps
     reward: RewardConfig = field(default_factory=RewardConfig)
+    # Task 13: add the two danger planes of ``rl.danger`` to the observation
+    # (22 channels instead of 20). False (default) = the v1 observation,
+    # exactly the behaviour before. A model trained with it cannot continue
+    # a model trained without it, or the other way round (other input shape).
+    danger_obs: bool = False
 
 
 @dataclass(frozen=True)
