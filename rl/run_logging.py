@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNS_DIR = ROOT / "runs"
-DEPENDENCIES = ("numpy", "gymnasium", "torch", "stable-baselines3", "pygame")
+DEPENDENCIES = ("numpy", "gymnasium", "torch", "stable-baselines3", "sb3-contrib", "pygame")
 
 
 def utc_now() -> str:

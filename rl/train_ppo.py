@@ -82,6 +82,16 @@ seeds (stage ``k``: ``seed + env_seed_offset + k * n_envs``), so a continued
 run need not replay its source's games; the run seed, torch's seed and the
 folder name stay ``seed``.
 
+Safety filter (Task 13, ``EnvConfig.action_mask``, ``"off"`` by default):
+with ``"board"`` or ``"cautious"`` the model is sb3-contrib's
+``MaskablePPO`` (same network, same settings), the training envs give the
+allowed actions of ``rl.safety`` each step and the policy only samples among
+them; the evaluation during training uses the same mask. With ``"off"`` the
+model is the same ``PPO`` as before and sb3-contrib is not even imported.
+``meta.json`` gets ``algorithm`` (``"PPO"`` or ``"MaskablePPO"``).
+The danger map (Task 13, ``EnvConfig.danger_obs``) only changes the
+observation; see ``rl.danger``.
+
 Each run writes a new folder ``runs/<time>_ppo_seed<seed>/`` with
 ``config.json``, ``meta.json``, ``progress.csv`` (SB3's logger, one row per
 rollout, including the cumulative episode outcomes), ``model.zip`` and the
@@ -134,6 +144,7 @@ from rl.evaluate_agent import (
 from rl.init_model import inspect_init_model, load_init_model
 from rl.networks import SmallGridCNN
 from rl.priority import raise_priority
+from rl.safety import check_mask_mode
 from rl.run_logging import RunLog, new_run_dir, write_json
 from rl.seeds import TrainingSeedGuard, check_training_seed, train_eval_seeds
 
@@ -293,6 +304,25 @@ def env_seed(cfg: PPOConfig, seed: int) -> int:
     return int(seed) + cfg.env_seed_offset
 
 
+def masked(cfg: PPOConfig) -> bool:
+    """Whether the run uses the safety filter, so ``MaskablePPO`` (Task 13)."""
+    check_mask_mode(cfg.env.action_mask)
+    return cfg.env.action_mask != "off"
+
+
+def algorithm_class(cfg: PPOConfig):
+    """``PPO``, or sb3-contrib's ``MaskablePPO`` with the safety filter (imported only then)."""
+    if not masked(cfg):
+        return PPO
+    try:
+        from sb3_contrib import MaskablePPO
+    except ImportError as error:
+        raise ImportError("env.action_mask needs sb3-contrib (MaskablePPO): "
+                          "pip install sb3-contrib, the same version as "
+                          "stable-baselines3") from error
+    return MaskablePPO
+
+
 def make_model(cfg: PPOConfig, seed: int) -> PPO:
     """The PPO model and its vectorised envs, seeded with ``seed``.
 
@@ -309,6 +339,7 @@ def make_model(cfg: PPOConfig, seed: int) -> PPO:
     """
     if cfg.vec_env not in VEC_ENVS:
         raise ValueError(f"vec_env must be one of {VEC_ENVS}, not {cfg.vec_env!r}")
+    algorithm = algorithm_class(cfg)  # Task 13: checks env.action_mask first
     check_device(cfg.device)
     check_eval_opponents(cfg)
     first_env_seed = env_seed(cfg, seed)
@@ -323,10 +354,11 @@ def make_model(cfg: PPOConfig, seed: int) -> PPO:
         "net_arch": {"pi": list(cfg.net_arch_pi), "vf": list(cfg.net_arch_vf)},
         "normalize_images": False,
     }
-    # "MlpPolicy" only names SB3's actor-critic policy here: the features
-    # come from SmallGridCNN, which avoids CnnPolicy's uint8 image checks.
+    # "MlpPolicy" only names SB3's actor-critic policy here (sb3-contrib's
+    # maskable one for MaskablePPO): the features come from SmallGridCNN,
+    # which avoids CnnPolicy's uint8 image checks.
     def build():
-        return PPO("MlpPolicy", envs, learning_rate=cfg.learning_rate, n_steps=cfg.n_steps,
+        return algorithm("MlpPolicy", envs, learning_rate=cfg.learning_rate, n_steps=cfg.n_steps,
                    batch_size=cfg.batch_size, n_epochs=cfg.n_epochs, gamma=cfg.gamma,
                    gae_lambda=cfg.gae_lambda, clip_range=cfg.clip_range,
                    ent_coef=cfg.ent_coef, vf_coef=cfg.vf_coef,
@@ -471,6 +503,7 @@ class TrainingEvalCallback(BaseCallback):
         self.every = cfg.eval_every
         self.seeds = train_eval_seeds(cfg.eval_games)
         self.env = BombermanGymEnv(eval_opponents(cfg), cfg.env)
+        self.action_mask = cfg.env.action_mask  # Task 13: the run's safety filter
         self.next_at = cfg.eval_every
         self.last_at: int | None = None
         self.started = time.perf_counter()
@@ -486,7 +519,8 @@ class TrainingEvalCallback(BaseCallback):
         timesteps = int(self.model.num_timesteps)
         began = time.perf_counter()
         per_game: list = []
-        totals = evaluate_seeds(self.env, ModelPolicy(self.model, deterministic=True),
+        totals = evaluate_seeds(self.env, ModelPolicy(self.model, deterministic=True,
+                                                      action_mask=self.action_mask),
                                 self.seeds, per_game)
         now = time.perf_counter()
         row = curve_row(timesteps, totals, now - began, now - self.started)
@@ -652,6 +686,7 @@ def main(argv: list | None = None) -> Path:
     args = parse_args(argv)
     cfg = resolve_config(args)
     runtime = apply_runtime(cfg)
+    algorithm_class(cfg)  # Task 13: a bad action_mask or no sb3-contrib stops here
     # Before the run folder exists (the first two again in make_model).
     check_eval_opponents(cfg)
     check_stages(cfg, env_seed(cfg, args.seed))
@@ -666,6 +701,7 @@ def main(argv: list | None = None) -> Path:
         log.meta["runtime"] = runtime
         write_json(run_dir / "meta.json", log.meta)
         model = make_model(cfg, args.seed)
+        log.meta["algorithm"] = type(model).__name__  # Task 13
         log.meta["runtime"].update(device_record(model))
         write_json(run_dir / "meta.json", log.meta)
         try:

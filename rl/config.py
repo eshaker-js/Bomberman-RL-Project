@@ -45,6 +45,16 @@ class EnvConfig:
 
     max_steps: int = 800  # v0: truncation limit, in engine steps
     reward: RewardConfig = field(default_factory=RewardConfig)
+    # Task 13: add the two danger planes of ``rl.danger`` to the observation
+    # (22 channels instead of 20). False (default) = the v1 observation,
+    # exactly the behaviour before. A model trained with it cannot continue
+    # a model trained without it, or the other way round (other input shape).
+    danger_obs: bool = False
+    # Task 13: the safety filter of ``rl.safety``: "off" (default, exactly
+    # the behaviour before), "board" or "cautious". When on, actions after
+    # which the agent has no way out are masked and training uses
+    # sb3-contrib's MaskablePPO instead of PPO (``rl.train_ppo``).
+    action_mask: str = "off"
 
 
 @dataclass(frozen=True)

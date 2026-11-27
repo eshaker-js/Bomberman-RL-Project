@@ -26,6 +26,16 @@ Writes a new folder ``runs/<time>_eval-protocol_seed<first seed>/``:
 - ``eval.json``, ``config.json``, ``meta.json``
 
 The evaluated run folder is never changed.
+
+Task 13: the agent plays with the danger map and the safety filter its run
+trained with (``env.danger_obs`` and ``env.action_mask`` in the run's
+``config.json``; a run from before Task 13 has neither, so exactly as
+before). ``--action-mask`` overrides the filter for an ablation:
+``off`` plays a filter-trained agent without its filter, ``board`` or
+``cautious`` add a filter at test time, also to a plain PPO agent (its
+action probabilities without the masked actions). The default ``run`` is
+what it trained with. ``eval.json`` and ``config.json`` record the danger
+map, the filter used, the filter it trained with and the algorithm.
 """
 
 import argparse
@@ -40,13 +50,19 @@ from rl.evaluate_agent import (
     DEATH_CAUSES,
     NEW_FULL_KEYS,
     PPOPolicy,
+    check_observation,
     detect_kind,
     evaluate_full,
+    is_maskable,
+    run_settings,
 )
+from rl.safety import MASK_MODES, check_mask_mode
 from rl.run_logging import RunLog, new_run_dir, write_json
 from rl.seeds import eval_seeds
 
 LEVELS = tuple(LADDER)
+# ``--action-mask``: "run" = the filter the run trained with (Task 13).
+ACTION_MASK_CHOICES = ("run", *MASK_MODES)
 DEFAULT_GAMES = 200
 
 COUNT_FIELDS = ("games", "win", "loss", "draw", "timeout", "self_kills", "kills",
@@ -113,7 +129,8 @@ def write_csv(path: Path, fields: tuple, rows: list) -> None:
 
 
 def evaluate_levels(policy, seeds: range, levels=LEVELS, max_steps: int | None = None,
-                    stochastic_seed: bool = False) -> tuple[dict, list]:
+                    stochastic_seed: bool = False,
+                    danger_obs: bool = False) -> tuple[dict, list]:
     """``({level: totals}, game rows)`` of ``policy`` on ``seeds`` against each level."""
     max_steps = max_steps or EnvConfig().max_steps
     per_level, games = {}, []
@@ -123,7 +140,7 @@ def evaluate_levels(policy, seeds: range, levels=LEVELS, max_steps: int | None =
             torch.manual_seed(seeds.start + index)
         rows = []
         per_level[level] = evaluate_full(policy, level, len(seeds), seeds.start,
-                                         max_steps, per_game=rows)
+                                         max_steps, per_game=rows, danger_obs=danger_obs)
         games += [{"level": level, **row} for row in rows]
     return per_level, games
 
@@ -131,8 +148,12 @@ def evaluate_levels(policy, seeds: range, levels=LEVELS, max_steps: int | None =
 def run_protocol(run: str | Path, *, games: int = DEFAULT_GAMES, seed_offset: int = 0,
                  deterministic: bool = True, levels=LEVELS,
                  runs_dir: str | Path | None = None, argv: list | None = None,
-                 quiet: bool = False, max_steps: int | None = None) -> tuple[Path, list]:
+                 quiet: bool = False, max_steps: int | None = None,
+                 action_mask: str = "run") -> tuple[Path, list]:
     """Evaluate the PPO run folder ``run``; return the results folder and its rows.
+
+    ``action_mask`` (Task 13): ``"run"`` (default) plays with the filter the
+    run trained with, or one of ``rl.safety.MASK_MODES``.
 
     ``max_steps`` is only for tests (short games); the protocol itself, and
     its command line, always use ``EnvConfig().max_steps``.
@@ -143,21 +164,31 @@ def run_protocol(run: str | Path, *, games: int = DEFAULT_GAMES, seed_offset: in
     unknown = [level for level in levels if level not in LADDER]
     if unknown:
         raise ValueError(f"unknown ladder levels {unknown}; choose from {list(LADDER)}")
+    trained = run_settings(run)
+    if action_mask != "run":
+        check_mask_mode(action_mask)
+    mask = trained["action_mask"] if action_mask == "run" else action_mask
+    check_mask_mode(mask)
     seeds = eval_seeds(games, seed_offset)
     max_steps = max_steps or EnvConfig().max_steps
+    policy = PPOPolicy(run / "model.zip", deterministic=deterministic, action_mask=mask)
+    check_observation(policy.model, trained["danger_obs"], run / "model.zip")
     settings = {"run": str(run), "kind": "ppo", "protocol": "all ladder levels",
                 "levels": list(levels), "games_per_level": games,
                 "first_seed": seeds.start, "last_seed": seeds.stop - 1,
                 "seed_offset": seed_offset, "max_steps": max_steps,
                 "policy": "deterministic" if deterministic else "stochastic",
                 "torch_seed_per_level": None if deterministic else
-                {level: seeds.start + i for i, level in enumerate(levels)}}
-    policy = PPOPolicy(run / "model.zip", deterministic=deterministic)
+                {level: seeds.start + i for i, level in enumerate(levels)},
+                "danger_obs": trained["danger_obs"], "action_mask": mask,
+                "trained_action_mask": trained["action_mask"],
+                "algorithm": "MaskablePPO" if is_maskable(policy.model) else "PPO"}
     out = new_run_dir("eval-protocol", seeds.start, runs_dir)
     with RunLog(out, "eval-protocol", seeds.start, settings,
                 argv=sys.argv if argv is None else ["-m", "rl.eval_protocol", *argv]) as log:
         per_level, game_rows = evaluate_levels(policy, seeds, levels, max_steps,
-                                               stochastic_seed=not deterministic)
+                                               stochastic_seed=not deterministic,
+                                               danger_obs=trained["danger_obs"])
         rows = [summary_row(level, per_level[level]) for level in levels]
         rows.append(summary_row("total", total_counts(per_level)))
         write_csv(out / "protocol.csv", PROTOCOL_FIELDS, rows)
@@ -167,7 +198,9 @@ def run_protocol(run: str | Path, *, games: int = DEFAULT_GAMES, seed_offset: in
         log.finish({"rows": rows})
     if not quiet:
         print(f"Protocol for {run}: {settings['policy']} policy, {games} games per level, "
-              f"seeds {seeds.start:,} to {seeds.stop - 1:,}, max {max_steps} steps")
+              f"seeds {seeds.start:,} to {seeds.stop - 1:,}, max {max_steps} steps, "
+              f"danger map {'on' if trained['danger_obs'] else 'off'}, "
+              f"safety filter {mask} (trained with {trained['action_mask']})")
         print_rows(rows)
         print(f"results folder: {out}")
     return out, rows
@@ -209,11 +242,15 @@ def main(argv: list | None = None) -> tuple[Path, list]:
     parser.add_argument("--levels", nargs="+", default=list(LEVELS), choices=list(LADDER),
                         help="ladder levels (default: all 5)")
     parser.add_argument("--runs-dir", default=None, help="parent folder (default runs/)")
+    parser.add_argument("--action-mask", choices=ACTION_MASK_CHOICES, default="run",
+                        help="safety filter to play with (default run: what it trained "
+                             "with; off / board / cautious for the ablation)")
     args = parser.parse_args(argv)
     try:
         return run_protocol(args.run, games=args.games, seed_offset=args.seed_offset,
                             deterministic=not args.stochastic, levels=tuple(args.levels),
-                            runs_dir=args.runs_dir, argv=argv)
+                            runs_dir=args.runs_dir, argv=argv,
+                            action_mask=args.action_mask)
     except ValueError as error:
         parser.error(str(error))
 

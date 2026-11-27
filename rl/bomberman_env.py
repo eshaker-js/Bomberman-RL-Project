@@ -40,6 +40,8 @@ from agents.match import bot_seed
 from agents.noisy_bot import LADDER, make_bot
 from game.environment import AGENT_ID, GAME_RULES, NPC_IDS, Action, BombermanEnv
 from rl.config import EnvConfig, RewardConfig
+from rl.danger import N_DANGER_CHANNELS, danger_planes
+from rl.safety import action_mask, check_mask_mode
 from rl.observation import OBS_SHAPE, encode_observation
 
 # Discrete action index -> engine action, in the order of the Action enum:
@@ -176,18 +178,38 @@ def bomb_refused(prev: dict, me: int) -> bool:
     return left <= 0 or occupied
 
 
+def observation_shape(config: EnvConfig) -> tuple:
+    """The observation's shape: ``OBS_SHAPE``, with 2 more channels when ``danger_obs`` is on.
+
+    The danger planes (Task 13, ``rl.danger``) come after the 20 v1
+    channels, so channel ``c`` < 20 means the same in both.
+    """
+    if config.danger_obs:
+        return (OBS_SHAPE[0] + N_DANGER_CHANNELS, *OBS_SHAPE[1:])
+    return OBS_SHAPE
+
+
 class BombermanGymEnv(gym.Env):
-    """The full game as a Gymnasium env: ``Discrete(6)`` actions, v1 grid observation."""
+    """The full game as a Gymnasium env: ``Discrete(6)`` actions, v1 grid observation.
+
+    With ``config.danger_obs`` (Task 13) the observation also has the two
+    danger planes of ``rl.danger`` (channels 20 and 21).
+    ``action_masks()`` (Task 13) gives the actions the safety filter of
+    ``config.action_mask`` allows in the current state (``rl.safety``);
+    with ``"off"`` (default) all of them, and nothing calls it.
+    """
 
     metadata = {"render_modes": []}
 
     def __init__(self, opponents="random", config: EnvConfig | None = None) -> None:
         super().__init__()
         self.config = config if config is not None else EnvConfig()
+        check_mask_mode(self.config.action_mask)
         with_npcs, self.controllers = resolve_opponents(opponents)
         self.engine = BombermanEnv(with_npcs=with_npcs, random_crates=True, **GAME_RULES)
         self.action_space = spaces.Discrete(len(ACTIONS))
-        self.observation_space = spaces.Box(0.0, 1.0, shape=OBS_SHAPE, dtype=np.float32)
+        self.observation_space = spaces.Box(0.0, 1.0, shape=observation_shape(self.config),
+                                            dtype=np.float32)
         self.episode_seed: int | None = None
         self._state = self.engine.get_state()
 
@@ -202,7 +224,7 @@ class BombermanGymEnv(gym.Env):
             controller.reset(bot_seed(self.episode_seed, npc_id))
         info = {"outcome": None, "steps": 0, "events": [],
                 "episode_seed": self.episode_seed}
-        return encode_observation(self._state, AGENT_ID), info
+        return self._observe(self._state), info
 
     def step(self, action):
         if not self.action_space.contains(action):
@@ -227,7 +249,18 @@ class BombermanGymEnv(gym.Env):
             "episode_seed": self.episode_seed,
             "reward_terms": terms,
         }
-        return encode_observation(state, AGENT_ID), reward, terminated, truncated, info
+        return self._observe(state), reward, terminated, truncated, info
+
+    def action_masks(self) -> np.ndarray:
+        """The allowed actions now (6 booleans in ``ACTIONS`` order), for ``MaskablePPO``."""
+        return action_mask(self._state, AGENT_ID, self.config.action_mask)
+
+    def _observe(self, state: dict) -> np.ndarray:
+        """The agent's observation: v1, plus the danger planes when ``danger_obs`` is on."""
+        obs = encode_observation(state, AGENT_ID)
+        if self.config.danger_obs:
+            obs = np.concatenate([obs, danger_planes(state, AGENT_ID)])
+        return obs
 
     @property
     def state(self) -> dict:
