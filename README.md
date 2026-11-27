@@ -154,6 +154,30 @@ In a plan, `start_from` starts each seed from the same seed's model in an earlie
 
 Every seed's file is found and checked before the plan starts, `plan.json` records it, and `--continue` restarts from the same file. Paths in a plan file are relative to the repository root. Only load model files from your own runs (or from a teammate you trust): loading one unpickles it, which can run code.
 
+### Danger map and safety filter
+
+Two switches in `env`, both off by default (so a run without them trains exactly as before):
+
+- `danger_obs` (`rl/danger.py`) adds 2 channels to the observation (22 instead of 20): how soon each cell burns, from every bomb on the board with chain reactions and flames still burning (1 = next tick, 0 = no known blast), and a full plane that is 1 when a bomb placed now still leaves a way out. A run with it can't continue a model trained without it, or the other way round.
+- `action_mask` (`rl/safety.py`): `"off"`, `"board"` or `"cautious"`. Before each step, every action after which the agent has no way out is masked and the policy only picks among the rest ("shielding", Alshiekh et al. 2018). `"board"` counts the bombs on the board, `"cautious"` also the bombs opponents could drop this tick (the rule bot's own rule). Both use the rule bot's escape check. With the filter on, training uses `MaskablePPO` from sb3-contrib, which must have the same version as stable-baselines3 (`pip install sb3-contrib==<your stable-baselines3 version>`, inside the venv that trains). A masked model only continues another masked run.
+
+Two variants of a plan, the filter's ablation:
+
+```json
+"variants": {
+  "danger_filter": {"env": {"danger_obs": true, "action_mask": "cautious"}},
+  "danger_only": {"env": {"danger_obs": true}}
+}
+```
+
+`rl.eval_protocol` (and `rl.evaluate_agent`) play every run with the settings in its `config.json`. `--action-mask` changes only the filter for the evaluation: `off` plays a filter-trained agent without it, and `board` or `cautious` add one to any agent. `eval.json` records the filter used and the one it trained with:
+
+```text
+python -m rl.eval_protocol --run runs/<ppo run folder> --action-mask off
+```
+
+The filter costs time (it runs the escape search for every action, every tick). Check `time/fps` in `progress.csv` after the first minutes of a run.
+
 ## Tests
 
 ```text

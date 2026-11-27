@@ -22,13 +22,20 @@ Stages:
   kills and crates of the agent, and (added in Task 8) the game length by
   outcome, buffs collected and the cause of every agent death (``GameTally``).
 
+Task 13: a PPO run is played with its own danger map and safety filter
+settings, read from its ``config.json`` (``run_settings``; a run from before
+Task 13 has neither, so both are off, exactly as before). A ``MaskablePPO``
+model is loaded as one.
+
 Results are printed and written to a new folder
 ``runs/<time>_eval-<kind>-<stage>_seed<first-seed>/`` (``eval.json``,
 ``config.json``, ``meta.json``); the evaluated run folder is never changed.
 """
 
 import argparse
+import json
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +47,24 @@ from rl.config import EnvConfig, TabularConfig
 from rl.run_logging import RunLog, new_run_dir, write_json
 from rl.tabular_env import TabularStateTracker, TinyStageEnv
 from rl.train_tabular import QTable
+
+
+def run_settings(run_dir: Path) -> dict:
+    """``{"danger_obs", "action_mask"}`` a PPO run trained with (Task 13).
+
+    Read from the run's ``config.json`` (``env.danger_obs``,
+    ``env.action_mask``). A run from before Task 13, or a folder without a
+    readable ``config.json``, has neither: ``False`` and ``"off"``.
+    """
+    try:
+        config = json.loads((Path(run_dir) / "config.json").read_text(encoding="utf-8"))
+        env = config.get("env", {}) if isinstance(config, dict) else {}
+    except (OSError, ValueError):
+        env = {}
+    if not isinstance(env, dict):
+        env = {}
+    return {"danger_obs": bool(env.get("danger_obs", False)),
+            "action_mask": env.get("action_mask", "off")}
 
 
 def detect_kind(run_dir: Path) -> str:
@@ -88,20 +113,87 @@ class ModelPolicy:
     def act(self, obs, state: dict) -> int:
         if self.action_mask is None:
             action, _ = self.model.predict(obs, deterministic=self.deterministic)
-        else:
-            from rl.safety import action_mask
-            masks = action_mask(state, AGENT_ID, self.action_mask)
+            return int(action)
+        from rl.safety import action_mask
+        masks = action_mask(state, AGENT_ID, self.action_mask)
+        if is_maskable(self.model):
             action, _ = self.model.predict(obs, deterministic=self.deterministic,
                                            action_masks=masks)
-        return int(action)
+            return int(action)
+        return self._masked_plain_action(obs, masks)
+
+    def _masked_plain_action(self, obs, masks) -> int:
+        """A plain PPO model with a filter added at test time (Task 13 ablation).
+
+        The policy's action probabilities with the masked actions removed:
+        the most likely remaining action (ties: the lowest index), or a sample
+        from the rest, renormalised, with torch's global RNG.
+        """
+        import torch
+        policy = self.model.policy
+        with torch.no_grad():
+            tensor, _ = policy.obs_to_tensor(obs)
+            probs = policy.get_distribution(tensor).distribution.probs[0].cpu()
+        probs = probs * torch.as_tensor(masks, dtype=probs.dtype)
+        if float(probs.sum()) <= 0.0:  # every allowed action has probability 0
+            probs = torch.as_tensor(masks, dtype=torch.float32)
+        if self.deterministic:
+            return int(torch.argmax(probs))
+        return int(torch.multinomial(probs / probs.sum(), 1))
+
+
+def is_maskable(model) -> bool:
+    """Whether ``model`` is sb3-contrib's ``MaskablePPO`` (without importing sb3-contrib)."""
+    return type(model).__name__ == "MaskablePPO"
 
 
 class PPOPolicy(ModelPolicy):
-    """Policy of a saved SB3 PPO model (deterministic unless asked otherwise)."""
+    """Policy of a saved SB3 PPO model (deterministic unless asked otherwise).
 
-    def __init__(self, path: Path, deterministic: bool = True) -> None:
-        from stable_baselines3 import PPO  # only needed for PPO runs
-        super().__init__(PPO.load(path, device="cpu"), deterministic)
+    Task 13: a ``MaskablePPO`` model (a run with the safety filter) is loaded
+    as one; ``action_mask`` is the filter mode to play with (see
+    ``ModelPolicy``; ``None`` = no filter, as before).
+    """
+
+    def __init__(self, path: Path, deterministic: bool = True,
+                 action_mask: str | None = None) -> None:
+        super().__init__(load_ppo_model(path), deterministic, action_mask)
+
+
+def check_observation(model, danger_obs: bool, path) -> None:
+    """``ValueError`` unless ``model`` takes the observation an env with ``danger_obs`` gives."""
+    from rl.bomberman_env import observation_shape
+    want = observation_shape(EnvConfig(danger_obs=danger_obs))
+    have = tuple(model.observation_space.shape)
+    if have != want:
+        raise ValueError(f"{path}: the model takes observations of shape {have}, but the "
+                         f"run's config.json says danger_obs={danger_obs} (shape {want}); "
+                         f"the run folder is inconsistent")
+
+
+def saved_with_maskable_policy(path) -> bool:
+    """Whether the saved SB3 zip at ``path`` uses sb3-contrib's maskable policy (Task 13).
+
+    Reads only the zip's ``data`` entry as JSON (nothing is unpickled): the
+    policy class records its module there. ``False`` for anything else,
+    including a missing or unreadable file (``PPO.load`` then reports it).
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            data = json.loads(archive.read("data"))
+        module = data["policy_class"]["__module__"]
+    except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile):
+        return False
+    return isinstance(module, str) and module.startswith("sb3_contrib.")
+
+
+def load_ppo_model(path: Path):
+    """A saved PPO or MaskablePPO model of this project, on the CPU."""
+    if saved_with_maskable_policy(path):
+        from sb3_contrib import MaskablePPO
+        return MaskablePPO.load(path, device="cpu")
+    from stable_baselines3 import PPO  # only needed for PPO runs
+    return PPO.load(path, device="cpu")
 
 
 def evaluate_tiny(policy: TabularPolicy, games: int, max_steps: int) -> dict:
@@ -234,8 +326,10 @@ class GameTally:
 
 
 def evaluate_full(policy, opponents: str, games: int, first_seed: int,
-                  max_steps: int, per_game: list | None = None) -> dict:
-    env = BombermanGymEnv(opponents, EnvConfig(max_steps=max_steps))
+                  max_steps: int, per_game: list | None = None,
+                  danger_obs: bool = False) -> dict:
+    """Totals of ``games`` games; ``danger_obs`` (Task 13) gives the policy the danger map."""
+    env = BombermanGymEnv(opponents, EnvConfig(max_steps=max_steps, danger_obs=danger_obs))
     try:
         return _evaluate_full(env, policy, games, first_seed, per_game)
     finally:
@@ -340,7 +434,9 @@ def main(argv: list | None = None) -> tuple[Path, dict]:
     if kind == "tabular":
         policy = TabularPolicy(QTable.load(run / "q_table.npz"), args.first_seed)
     else:
-        policy = PPOPolicy(run / "model.zip")
+        trained = run_settings(run)  # Task 13: play as it trained
+        policy = PPOPolicy(run / "model.zip", action_mask=trained["action_mask"])
+        check_observation(policy.model, trained["danger_obs"], run / "model.zip")
 
     settings = {"run": str(run), "kind": kind, "stage": stage, "games": args.games,
                 "first_seed": args.first_seed, "max_steps": max_steps,
@@ -351,8 +447,11 @@ def main(argv: list | None = None) -> tuple[Path, dict]:
         if stage == "tiny":
             results = evaluate_tiny(policy, args.games, max_steps)
         else:
+            # Task 13: the danger map only for a run that trained with it.
+            danger = {"danger_obs": True} if kind == "ppo" and \
+                run_settings(run)["danger_obs"] else {}
             results = evaluate_full(policy, args.opponents, args.games, args.first_seed,
-                                    max_steps)
+                                    max_steps, **danger)
         write_json(out / "eval.json", {"settings": settings, "results": results})
         log.finish(results)
 
