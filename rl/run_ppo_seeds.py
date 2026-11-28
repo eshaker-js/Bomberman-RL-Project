@@ -365,7 +365,11 @@ def resolve_init_models(plan: dict) -> dict:
             entry = {"path": record["absolute_path"], "sha256": record["sha256"],
                      "num_timesteps": record["num_timesteps"],
                      "source_run_dir": record["source_run_path"],
-                     "source_seed": record["source_seed"]}
+                     "source_seed": record["source_seed"],
+                     # Task 14: which kind the file is, which kind the run trains
+                     "source_algorithm": record["source_algorithm"],
+                     "run_algorithm": record["run_algorithm"],
+                     "converted": record["converted"]}
             entry.update({"start_from": spec} if spec is not None else {"init_model": direct})
             resolved.setdefault(name, {})[str(seed)] = entry
     if problems:
